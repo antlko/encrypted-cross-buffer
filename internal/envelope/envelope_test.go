@@ -135,6 +135,18 @@ func TestRoundTripPNG(t *testing.T) {
 	}
 }
 
+func TestSealRejectsNonPNG(t *testing.T) {
+	e := newEnv(t, 1)
+	p := SealParams{GroupID: e.group, SenderID: e.sender.id, SigningKey: e.sender.sk, Counter: 1,
+		Recipients: []age.Recipient{e.rcpts[0].ident.Recipient()}}
+	if _, err := SealBytes(p, CTypeImagePNG, []byte("GIF89a....")); !errors.Is(err, ErrBadInner) {
+		t.Fatal(err)
+	}
+	if _, err := SealBytes(p, CTypeImagePNG, nil); !errors.Is(err, ErrBadInner) {
+		t.Fatal(err)
+	}
+}
+
 func TestMultiRecipient(t *testing.T) {
 	e := newEnv(t, 3)
 	w := e.seal(t, 1, CTypeText, []byte("secret"))
@@ -318,6 +330,8 @@ func TestInnerRejections(t *testing.T) {
 		{"raw lying longer", inner(1, 0, 100, []byte("short")), ErrBadInner},
 		{"raw lying shorter", inner(1, 0, 2, []byte("short")), ErrBadInner},
 		{"png compressed", inner(2, 1, 1, zst([]byte("x"))), ErrBadInner},
+		{"png without signature", inner(2, 0, 4, []byte("abcd")), ErrBadInner},
+		{"png truncated signature", inner(2, 0, 7, []byte("\x89PNG\r\n\x1a")), ErrBadInner},
 		{"short inner", []byte{1, 0, 0}, ErrBadInner},
 		{"invalid utf8", inner(1, 0, 2, []byte{0xff, 0xfe}), ErrBadText},
 	}
@@ -361,7 +375,7 @@ func TestSealLimits(t *testing.T) {
 func FuzzOpen(f *testing.F) {
 	e := newEnv(f, 1)
 	f.Add(e.seal(f, 1, CTypeText, []byte(strings.Repeat("fuzz ", 40))))
-	f.Add(e.seal(f, 1, CTypeImagePNG, []byte("\x89PNGxxxx")))
+	f.Add(e.seal(f, 1, CTypeImagePNG, []byte("\x89PNG\r\n\x1a\nxxxx")))
 	f.Add([]byte("ECB1"))
 	p := e.openParams(e.rcpts[0], 0)
 	p.Limits = Limits{MaxCiphertext: 1 << 16}

@@ -141,6 +141,9 @@ func Seal(dst io.Writer, p SealParams, ctype uint8, body []byte) error {
 	if ctype == CTypeText && !utf8.Valid(body) {
 		return ErrBadText
 	}
+	if ctype == CTypeImagePNG && !hasPNGSig(body) {
+		return fmt.Errorf("%w: missing PNG signature", ErrBadInner)
+	}
 	comp, stored := compNone, body
 	if ctype == CTypeText && len(body) > 0 {
 		if c := encodeZstd(body); len(c) < len(body) {
@@ -307,8 +310,15 @@ func Open(src io.Reader, p OpenParams) (*Item, error) {
 	if ctype == CTypeText && !utf8.Valid(body) {
 		return nil, ErrBadText
 	}
+	if ctype == CTypeImagePNG && !hasPNGSig(body) {
+		return nil, fmt.Errorf("%w: missing PNG signature", ErrBadInner)
+	}
 	return &Item{Header: h, CType: ctype, Body: body}, nil
 }
+
+var pngSig = []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+
+func hasPNGSig(b []byte) bool { return bytes.HasPrefix(b, pngSig) }
 
 // OpenBytes is Open on a byte slice.
 func OpenBytes(frameBytes []byte, p OpenParams) (*Item, error) {

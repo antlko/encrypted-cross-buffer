@@ -13,6 +13,16 @@
 //
 // Entries are sorted by strictly increasing device_id. The signature covers
 // "ecb-roster-v1" || (all bytes preceding sig).
+//
+// Trust caveats:
+//   - Genesis (Verify with held == nil) is trust-on-first-use: a self-signed
+//     single-member roster proves nothing about who the member is. It is only
+//     safe if the roster arrives through the authenticated pairing channel
+//     (PAKE + key confirmation), never from the relay.
+//   - A holder with a stale roster accepts a newer roster signed by a member
+//     that has since been removed (it is still a member of the held roster).
+//     Closing that window needs relay-side enforcement of the current roster.
+//   - Entries retained between versions are immutable (see Verify).
 package roster
 
 import (
@@ -263,8 +273,9 @@ func (r *Roster) Sign(sk ed25519.PrivateKey) error {
 // Verify checks r against the roster the caller currently holds (nil if none).
 // With held == nil, r must be a valid genesis (version 1, one member, self-signed).
 // Otherwise r.Version must be > held.Version, the group must match and the
-// signer must be a member of held (so removed devices cannot sign), and every
-// device that is new relative to held must have been added by the signer.
+// signer must be a member of held (so removed devices cannot sign), every
+// device that is new relative to held must have been added by the signer, and
+// every retained device must be field-for-field identical to its held entry.
 func (r *Roster) Verify(held *Roster) error {
 	if err := r.validate(); err != nil {
 		return err
@@ -291,8 +302,17 @@ func (r *Roster) Verify(held *Roster) error {
 		}
 		signerKey = se.Ed25519
 		for _, e := range r.Entries {
-			if _, old := held.Lookup(e.DeviceID); !old && e.AddedBy != r.Signer {
-				return fmt.Errorf("%w: new device not added by signer", ErrInvalid)
+			old, ok := held.Lookup(e.DeviceID)
+			if !ok {
+				if e.AddedBy != r.Signer {
+					return fmt.Errorf("%w: new device not added by signer", ErrInvalid)
+				}
+				continue
+			}
+			// Retained entries are immutable between versions.
+			if old.Name != e.Name || old.X25519Pub != e.X25519Pub || !bytes.Equal(old.Ed25519, e.Ed25519) ||
+				old.AddedBy != e.AddedBy || old.AddedAtMs != e.AddedAtMs {
+				return fmt.Errorf("%w: retained device %x was modified", ErrInvalid, e.DeviceID[:4])
 			}
 		}
 	}

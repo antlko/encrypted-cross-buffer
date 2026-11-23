@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"testing"
@@ -142,7 +144,7 @@ func TestRejects(t *testing.T) {
 		want error
 	}{
 		{"tampered header counter", flip(40), ErrBadSignature},
-		{"tampered header flags", flip(5), ErrBadSignature},
+		{"reserved flag bit set", flip(5), ErrBadFlags},
 		{"tampered ct", flip(HeaderSize + 10), ErrBadSignature},
 		{"tampered sig", flip(len(wire) - 1), ErrBadSignature},
 		{"truncated in ct", wire[:HeaderSize+10], ErrTruncated},
@@ -241,4 +243,59 @@ func FuzzVerify(f *testing.F) {
 		// Must not panic; random input is overwhelmingly rejected.
 		v.Verify(bytes.NewReader(in), io.Discard)
 	})
+}
+
+func TestReservedFlagsRejected(t *testing.T) {
+	h := sample(nil)
+	h.Flags = 0x80
+	if _, err := ParseHeader(append([]byte(nil), func() []byte { b := h.Marshal(); return b[:] }()...), 0); !errors.Is(err, ErrBadFlags) {
+		t.Fatalf("parse: %v", err)
+	}
+	_, sk := testKey(t)
+	if _, err := NewWriter(io.Discard, sk, h); !errors.Is(err, ErrBadFlags) {
+		t.Fatalf("writer: %v", err)
+	}
+}
+
+func TestSignatureDomainSeparation(t *testing.T) {
+	pk, sk := testKey(t)
+	h := sample([]byte("ct"))
+	hdr := h.Marshal()
+	hash := sha256.Sum256([]byte("ct"))
+	if !VerifySig(pk, hdr, hash, Sign(sk, hdr, hash)) {
+		t.Fatal("control failed")
+	}
+	// Signature over header||SHA256(ct) without the "ecb-item-v1" prefix.
+	bare := ed25519.Sign(sk, append(append([]byte(nil), hdr[:]...), hash[:]...))
+	if VerifySig(pk, hdr, hash, bare) {
+		t.Fatal("signature without domain prefix verified")
+	}
+	// A different context prefix must not verify either.
+	other := ed25519.Sign(sk, append(append([]byte("ecb-roster-v1"), hdr[:]...), hash[:]...))
+	if VerifySig(pk, hdr, hash, other) {
+		t.Fatal("signature with foreign context verified")
+	}
+}
+
+// TestSignatureKnownAnswer pins the signed byte layout; any change to it
+// (prefix, field order, hash) changes the signature and fails this test.
+func TestSignatureKnownAnswer(t *testing.T) {
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = byte(i)
+	}
+	sk := ed25519.NewKeyFromSeed(seed)
+	ct := []byte("ecb known answer ciphertext")
+	h := sample(ct)
+	hdr := h.Marshal()
+	hash := sha256.Sum256(ct)
+	sig := Sign(sk, hdr, hash)
+	got := hex.EncodeToString(sig)
+	const want = "4754fb5efc6f76f383625e3803693f0bd933ce861a7987628a4318aa0f9e185ef71f39e047d5e2604b7e2a63cec190fc0a4d42c9965557fb4839698e0f4b4d0a"
+	if got != want {
+		t.Fatalf("signature layout changed:\n got %s\nwant %s", got, want)
+	}
+	if !VerifySig(sk.Public().(ed25519.PublicKey), hdr, hash, sig) {
+		t.Fatal("verify failed")
+	}
 }

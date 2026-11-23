@@ -2,10 +2,12 @@ package keystore
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/anatolkzh/encrypted-cross-buffer/internal/roster"
@@ -103,11 +105,14 @@ func TestKeyringPreferredAndFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Unavailable keyring -> file fallback.
+	// Unavailable keyring, fallback allowed -> file.
 	dir2 := t.TempDir()
-	s2, _ := Open(Options{Dir: dir2, Keyring: &fakeKR{fail: true}})
+	s2, _ := Open(Options{Dir: dir2, Keyring: &fakeKR{fail: true}, AllowFileFallback: true})
 	if err := s2.SaveIdentity(id); err != nil {
 		t.Fatal(err)
+	}
+	if s2.Backend() != "file" {
+		t.Errorf("backend %q", s2.Backend())
 	}
 	if p := perm(t, filepath.Join(dir2, "identity.key")); p != 0o600 {
 		t.Errorf("perm %o", p)
@@ -115,6 +120,171 @@ func TestKeyringPreferredAndFallback(t *testing.T) {
 	got, err = s2.LoadIdentity()
 	if err != nil || got.DeviceID() != id.DeviceID() {
 		t.Fatal(err)
+	}
+}
+
+func TestKeychainFailureNeverReplacesIdentity(t *testing.T) {
+	t.Setenv(EnvBackend, "")
+	// Failing keychain, no file: typed error, nothing generated or written.
+	dir := t.TempDir()
+	s, _ := Open(Options{Dir: dir, Keyring: &fakeKR{fail: true}})
+	if _, err := s.LoadIdentity(); !errors.Is(err, ErrKeychainUnavailable) || errors.Is(err, ErrNotFound) {
+		t.Fatalf("load: %v", err)
+	}
+	if _, _, err := s.LoadOrCreateIdentity(); !errors.Is(err, ErrKeychainUnavailable) {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "identity.key")); err == nil {
+		t.Fatal("identity file generated on keychain failure")
+	}
+	id, _ := Generate()
+	if err := s.SaveIdentity(id); !errors.Is(err, ErrKeychainUnavailable) {
+		t.Fatalf("save: %v", err)
+	}
+
+	// Failing keychain, existing file: file is used, never overwritten.
+	fs, _ := Open(Options{Dir: dir, ForceFile: true})
+	if err := fs.SaveIdentity(id); err != nil {
+		t.Fatal(err)
+	}
+	got, created, err := s.LoadOrCreateIdentity()
+	if err != nil || created || got.DeviceID() != id.DeviceID() {
+		t.Fatalf("%v %v", err, created)
+	}
+	if s.Backend() != "file" {
+		t.Errorf("backend %q", s.Backend())
+	}
+
+	// Working keychain without entry and without file -> only then generate.
+	kr := &fakeKR{}
+	s3, _ := Open(Options{Dir: t.TempDir(), Keyring: kr})
+	if _, created, err := s3.LoadOrCreateIdentity(); err != nil || !created || !kr.have || s3.Backend() != "keychain" {
+		t.Fatal(err, created)
+	}
+}
+
+func TestStaleCopiesRemoved(t *testing.T) {
+	t.Setenv(EnvBackend, "")
+	dir := t.TempDir()
+	id, _ := Generate()
+	kr := &fakeKR{secret: "old", have: true}
+	s, _ := Open(Options{Dir: dir, Backend: BackendFile, Keyring: kr})
+	if err := s.SaveIdentity(id); err != nil {
+		t.Fatal(err)
+	}
+	if kr.have {
+		t.Fatal("stale keychain entry kept")
+	}
+	s2, _ := Open(Options{Dir: dir, Keyring: kr})
+	if err := s2.SaveIdentity(id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "identity.key")); err == nil {
+		t.Fatal("stale file kept")
+	}
+}
+
+func TestEnvOverrideAndInvalidBackend(t *testing.T) {
+	t.Setenv(EnvBackend, "file")
+	s, err := Open(Options{Dir: t.TempDir(), Keyring: &fakeKR{fail: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.LoadOrCreateIdentity(); err != nil || s.Backend() != "file" {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvBackend, "bogus")
+	if _, err := Open(Options{Dir: t.TempDir()}); err == nil {
+		t.Fatal("accepted bogus backend")
+	}
+}
+
+func TestInsecureIdentityFileRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permissions")
+	}
+	dir := t.TempDir()
+	s, _ := Open(Options{Dir: dir, ForceFile: true})
+	if _, _, err := s.LoadOrCreateIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "identity.key")
+	if err := os.Chmod(p, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.LoadIdentity()
+	if !errors.Is(err, ErrInsecureFile) || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("got %v", err)
+	}
+	if _, _, err := s.LoadOrCreateIdentity(); err == nil {
+		t.Fatal("must not regenerate")
+	}
+	os.Chmod(p, 0o600)
+	if _, err := s.LoadIdentity(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUpdateStateTwoStoresNoLostUpdates(t *testing.T) {
+	dir := t.TempDir()
+	const stores, per = 4, 40
+	sender := [16]byte{9}
+	var mu sync.Mutex
+	seen := map[uint64]bool{}
+	var wg sync.WaitGroup
+	for i := 0; i < stores; i++ {
+		s, err := Open(Options{Dir: dir, ForceFile: true}) // separate instances ~ processes
+		if err != nil {
+			t.Fatal(err)
+		}
+		wg.Add(1)
+		go func(i int, s *Store) {
+			defer wg.Done()
+			var last uint64
+			for j := 0; j < per; j++ {
+				n, err := s.NextSendCounter()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if n <= last {
+					t.Errorf("not increasing: %d after %d", n, last)
+				}
+				last = n
+				mu.Lock()
+				if seen[n] {
+					t.Errorf("duplicate counter %d", n)
+				}
+				seen[n] = true
+				mu.Unlock()
+				if err := s.SetLastCounter(sender, n); err != nil {
+					t.Error(err)
+					return
+				}
+				// A stale SaveState must not lower counters.
+				if err := s.SaveState(&State{RelayURL: "r", SendCounter: 1, LastCounters: map[string]uint64{fmt.Sprintf("%x", sender): 1}}); err != nil {
+					t.Error(err)
+					return
+				}
+				if st, err := s.LoadState(); err != nil || st.LastCounter(sender) < n || st.SendCounter < n {
+					t.Errorf("counters decreased: %+v %v", st, err)
+				}
+			}
+		}(i, s)
+	}
+	wg.Wait()
+	s, _ := Open(Options{Dir: dir, ForceFile: true})
+	st, _ := s.LoadState()
+	if st.SendCounter != stores*per || len(seen) != stores*per || st.LastCounter(sender) != stores*per {
+		t.Fatalf("send=%d seen=%d last=%d", st.SendCounter, len(seen), st.LastCounter(sender))
+	}
+	// fn error -> nothing written.
+	boom := errors.New("boom")
+	if err := s.UpdateState(func(st *State) error { st.RelayURL = "x"; return boom }); err != boom {
+		t.Fatal(err)
+	}
+	if st, _ = s.LoadState(); st.RelayURL != "r" {
+		t.Fatalf("failed update persisted: %q", st.RelayURL)
 	}
 }
 

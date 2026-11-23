@@ -288,3 +288,41 @@ func FuzzUnmarshal(f *testing.F) {
 		}
 	})
 }
+
+func TestRetainedEntriesImmutable(t *testing.T) {
+	a, b, c := newDev(t, "a"), newDev(t, "b"), newDev(t, "c")
+	r1 := genesis(t, a)
+	r2 := addSigned(t, r1, a, b)
+
+	// Signer swaps another member's X25519 key while adding c.
+	evil := newDev(t, "evil")
+	mod := func(f func(e *Entry)) *Roster {
+		r3, err := r2.Add(a.entry.DeviceID, c.entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range r3.Entries {
+			if r3.Entries[i].DeviceID == b.entry.DeviceID {
+				f(&r3.Entries[i])
+			}
+		}
+		if err := r3.Sign(a.sk); err != nil {
+			t.Fatal(err)
+		}
+		return r3
+	}
+	if err := mod(func(e *Entry) {}).Verify(r2); err != nil {
+		t.Fatalf("control: %v", err)
+	}
+	cases := map[string]func(e *Entry){
+		"x25519":  func(e *Entry) { e.X25519Pub = evil.entry.X25519Pub },
+		"rename":  func(e *Entry) { e.Name = "renamed" },
+		"addedby": func(e *Entry) { e.AddedBy = b.entry.DeviceID },
+		"addedat": func(e *Entry) { e.AddedAtMs++ },
+	}
+	for name, f := range cases {
+		if err := mod(f).Verify(r2); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: got %v", name, err)
+		}
+	}
+}

@@ -50,6 +50,7 @@ var (
 	ErrTrailingData   = errors.New("frame: trailing data after signature")
 	ErrUnknownSender  = errors.New("frame: unknown sender")
 	ErrBadSignature   = errors.New("frame: signature verification failed")
+	ErrBadFlags       = errors.New("frame: reserved flag bits set")
 	ErrLengthMismatch = errors.New("frame: written length differs from ct_len")
 )
 
@@ -89,6 +90,9 @@ func ParseHeader(b []byte, maxCt uint64) (Header, error) {
 	}
 	if b[4] != Version {
 		return h, fmt.Errorf("%w: %d", ErrBadVersion, b[4])
+	}
+	if b[5] != 0 {
+		return h, fmt.Errorf("%w: 0x%02x", ErrBadFlags, b[5])
 	}
 	if maxCt == 0 {
 		maxCt = DefaultMaxCiphertext
@@ -155,6 +159,9 @@ type Writer struct {
 func NewWriter(w io.Writer, sk ed25519.PrivateKey, h Header) (*Writer, error) {
 	if len(sk) != ed25519.PrivateKeySize {
 		return nil, errors.New("frame: invalid signing key")
+	}
+	if h.Flags != 0 {
+		return nil, ErrBadFlags
 	}
 	fw := &Writer{w: w, sk: sk, hdr: h.Marshal(), remain: h.CtLen, hash: sha256.New()}
 	if _, err := w.Write(fw.hdr[:]); err != nil {

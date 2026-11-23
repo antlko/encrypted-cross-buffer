@@ -16,8 +16,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -32,6 +34,7 @@ const (
 
 	identityFile = "identity.key"
 	stateFile    = "state.json"
+	lockName     = "state.lock"
 	secretMagic  = "ecb-key-v1"
 )
 
@@ -96,7 +99,8 @@ func decodeIdentity(s string) (*Identity, error) {
 
 // SecretBackend is a place to keep the identity secret (the OS keychain).
 type SecretBackend interface {
-	// Get returns the secret or ErrNotFound.
+	// Get returns the secret or ErrNotFound (and only ErrNotFound when the
+	// keychain works but holds no entry; any other error means "unavailable").
 	Get() (string, error)
 	Set(secret string) error
 	Delete() error
@@ -120,11 +124,46 @@ func (osKeyring) Delete() error {
 	return err
 }
 
+// Backend selects where the identity secret lives.
+type Backend string
+
+const (
+	// BackendAuto prefers the keychain; the identity file is only read when the
+	// keychain has no entry or is unavailable, and only written when
+	// AllowFileFallback is set.
+	BackendAuto Backend = "auto"
+	// BackendKeychain uses the keychain only (the file is touched only when
+	// AllowFileFallback is set).
+	BackendKeychain Backend = "keychain"
+	// BackendFile uses the 0600 identity file only.
+	BackendFile Backend = "file"
+)
+
+// EnvBackend is the environment variable (file|keychain|auto) that overrides
+// Options.Backend.
+const EnvBackend = "ECB_KEYSTORE"
+
+// ErrKeychainUnavailable means the OS keychain failed (locked, denied, no
+// secret service) and no allowed fallback could serve the request. The
+// identity was NOT created or replaced. It wraps the keychain error.
+var ErrKeychainUnavailable = errors.New("keystore: OS keychain unavailable")
+
+// ErrInsecureFile means the identity file is accessible by group/other.
+var ErrInsecureFile = errors.New("keystore: identity file permissions too open")
+
 // Options configure a Store.
 type Options struct {
 	// Dir is the config dir; empty means os.UserConfigDir()/ecb.
 	Dir string
-	// ForceFile disables the keychain and always uses the 0600 file.
+	// Backend selects the secret backend; empty means auto. The ECB_KEYSTORE
+	// environment variable (file|keychain|auto) overrides it.
+	Backend Backend
+	// AllowFileFallback permits writing the identity to the 0600 file when the
+	// keychain fails. Default false; implied by Backend == BackendFile.
+	AllowFileFallback bool
+	// ForceFile is legacy shorthand for Backend == BackendFile that never
+	// touches the OS keychain (not even to delete a stale entry), unless
+	// Keyring is injected.
 	ForceFile bool
 	// Keyring overrides the keychain backend (tests); nil means the OS keychain.
 	Keyring SecretBackend
@@ -132,9 +171,12 @@ type Options struct {
 
 // Store persists the identity and client state.
 type Store struct {
-	dir string
-	kr  SecretBackend // nil when ForceFile
-	mu  sync.Mutex
+	dir      string
+	kr       SecretBackend // nil when no keychain should be touched
+	backend  Backend
+	fallback bool
+	mu       sync.Mutex
+	active   string
 }
 
 // Open creates a Store, creating the config dir with mode 0700.
@@ -153,12 +195,29 @@ func Open(o Options) (*Store, error) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir}
-	if !o.ForceFile {
-		s.kr = o.Keyring
-		if s.kr == nil {
-			s.kr = osKeyring{}
-		}
+	b := o.Backend
+	if o.ForceFile {
+		b = BackendFile
+	}
+	if env := strings.ToLower(strings.TrimSpace(os.Getenv(EnvBackend))); env != "" {
+		b = Backend(env)
+	}
+	switch b {
+	case "":
+		b = BackendAuto
+	case BackendAuto, BackendKeychain, BackendFile:
+	default:
+		return nil, fmt.Errorf("keystore: invalid backend %q (want auto, keychain or file)", b)
+	}
+	s := &Store{dir: dir, backend: b, fallback: o.AllowFileFallback || b == BackendFile}
+	s.kr = o.Keyring
+	if s.kr == nil && !(o.ForceFile && os.Getenv(EnvBackend) == "") {
+		s.kr = osKeyring{}
+	}
+	if b == BackendFile {
+		s.active = "file"
+	} else {
+		s.active = "keychain"
 	}
 	return s, nil
 }
@@ -166,44 +225,157 @@ func Open(o Options) (*Store, error) {
 // Dir returns the config directory.
 func (s *Store) Dir() string { return s.dir }
 
-// SaveIdentity stores id in the keychain, or in the 0600 file when the
-// keychain is unavailable (or forced off).
-func (s *Store) SaveIdentity(id *Identity) error {
+// Backend returns the backend currently holding the identity: "keychain" or
+// "file". It reflects the last load/save, so the CLI should call it after
+// LoadOrCreateIdentity and warn loudly when it is "file" although the keychain
+// was requested (file fallback in use).
+func (s *Store) Backend() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	secret := id.encode()
-	if s.kr != nil {
-		if err := s.kr.Set(secret); err == nil {
-			_ = os.Remove(filepath.Join(s.dir, identityFile))
-			return nil
-		}
-	}
-	return writeFileAtomic(filepath.Join(s.dir, identityFile), []byte(secret))
+	return s.active
 }
 
-// LoadIdentity returns the stored identity, or ErrNotFound.
-func (s *Store) LoadIdentity() (*Identity, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.kr != nil {
-		if sec, err := s.kr.Get(); err == nil {
-			return decodeIdentity(sec)
-		}
-		// not found or keychain unavailable: try the file
-	}
-	b, err := os.ReadFile(filepath.Join(s.dir, identityFile))
+func (s *Store) idPath() string { return filepath.Join(s.dir, identityFile) }
+
+// readIdentityFile reads the identity file, refusing group/other-accessible
+// modes (unix). Returns ErrNotFound when absent.
+func (s *Store) readIdentityFile() (*Identity, error) {
+	f, err := os.Open(s.idPath())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
+	if runtime.GOOS != "windows" {
+		fi, err := f.Stat()
+		if err != nil {
+			return nil, err
+		}
+		if fi.Mode().Perm()&0o077 != 0 {
+			return nil, fmt.Errorf("%w: %s has mode %04o; run: chmod 600 %s", ErrInsecureFile, s.idPath(), fi.Mode().Perm(), s.idPath())
+		}
+	}
+	b, err := io.ReadAll(io.LimitReader(f, 4096))
+	if err != nil {
+		return nil, err
+	}
 	return decodeIdentity(string(b))
 }
 
-// LoadOrCreateIdentity loads the identity, generating and saving one if absent.
+func (s *Store) writeIdentityFile(secret string) error {
+	if err := writeFileAtomic(s.idPath(), []byte(secret)); err != nil {
+		return err
+	}
+	s.active = "file"
+	return nil
+}
+
+func (s *Store) deleteStaleKeychain() {
+	if s.kr != nil {
+		_ = s.kr.Delete()
+	}
+}
+
+// SaveIdentity stores id in the keychain. If the keychain fails it returns
+// ErrKeychainUnavailable unless file fallback is allowed, in which case the
+// 0600 file is written (see Backend). The identity in the other backend is
+// removed best-effort so a stale copy can never shadow the new one.
+func (s *Store) SaveIdentity(id *Identity) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveIdentity(id)
+}
+
+func (s *Store) saveIdentity(id *Identity) error {
+	secret := id.encode()
+	if s.backend != BackendFile && s.kr != nil {
+		err := s.kr.Set(secret)
+		if err == nil {
+			_ = os.Remove(s.idPath())
+			s.active = "keychain"
+			return nil
+		}
+		if !s.fallback {
+			return fmt.Errorf("%w: %w", ErrKeychainUnavailable, err)
+		}
+	} else if s.backend != BackendFile {
+		return fmt.Errorf("%w: no keychain backend", ErrKeychainUnavailable)
+	}
+	if err := s.writeIdentityFile(secret); err != nil {
+		return err
+	}
+	s.deleteStaleKeychain()
+	return nil
+}
+
+// LoadIdentity returns the stored identity or ErrNotFound. A keychain failure
+// (anything but "no entry") falls back to an existing identity file, else
+// returns ErrKeychainUnavailable; it never reports ErrNotFound in that case.
+func (s *Store) LoadIdentity() (*Identity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadIdentity()
+}
+
+func (s *Store) loadIdentity() (*Identity, error) {
+	if s.backend == BackendFile || s.kr == nil {
+		if s.backend != BackendFile {
+			return nil, fmt.Errorf("%w: no keychain backend", ErrKeychainUnavailable)
+		}
+		id, err := s.readIdentityFile()
+		if err == nil {
+			s.active = "file"
+		}
+		return id, err
+	}
+	sec, err := s.kr.Get()
+	if err == nil {
+		id, derr := decodeIdentity(sec)
+		if derr == nil {
+			s.active = "keychain"
+		}
+		return id, derr
+	}
+	readFile := s.backend == BackendAuto || s.fallback
+	if errors.Is(err, ErrNotFound) || errors.Is(err, keyring.ErrNotFound) {
+		if !readFile {
+			return nil, ErrNotFound
+		}
+		return s.fromFile(ErrNotFound)
+	}
+	// Keychain locked/denied/unavailable: never claim "not found".
+	if !readFile {
+		return nil, fmt.Errorf("%w: %w", ErrKeychainUnavailable, err)
+	}
+	return s.fromFile(fmt.Errorf("%w: %w", ErrKeychainUnavailable, err))
+}
+
+// fromFile reads the identity file; when it is absent it returns missing.
+func (s *Store) fromFile(missing error) (*Identity, error) {
+	id, err := s.readIdentityFile()
+	if errors.Is(err, ErrNotFound) {
+		return nil, missing
+	}
+	if err == nil {
+		s.active = "file"
+	}
+	return id, err
+}
+
+// LoadOrCreateIdentity loads the identity, generating and saving one only when
+// it is definitively absent (ErrNotFound). It never generates on keychain
+// errors, so a working identity cannot be replaced.
 func (s *Store) LoadOrCreateIdentity() (*Identity, bool, error) {
-	id, err := s.LoadIdentity()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	unlock, err := lockFile(filepath.Join(s.dir, lockName))
+	if err != nil {
+		return nil, false, err
+	}
+	defer unlock()
+	id, err := s.loadIdentity()
 	if err == nil {
 		return id, false, nil
 	}
@@ -213,7 +385,7 @@ func (s *Store) LoadOrCreateIdentity() (*Identity, bool, error) {
 	if id, err = Generate(); err != nil {
 		return nil, false, err
 	}
-	if err := s.SaveIdentity(id); err != nil {
+	if err := s.saveIdentity(id); err != nil {
 		return nil, false, err
 	}
 	return id, true, nil
@@ -226,7 +398,7 @@ func (s *Store) DeleteIdentity() error {
 	if s.kr != nil {
 		_ = s.kr.Delete()
 	}
-	if err := os.Remove(filepath.Join(s.dir, identityFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(s.idPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil
@@ -274,10 +446,7 @@ func (st *State) SetLastCounter(sender [16]byte, c uint64) {
 // NextSendCounter increments and returns the send counter.
 func (st *State) NextSendCounter() uint64 { st.SendCounter++; return st.SendCounter }
 
-// LoadState reads the state file; a missing file yields an empty State.
-func (s *Store) LoadState() (*State, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Store) readState() (*State, error) {
 	b, err := os.ReadFile(filepath.Join(s.dir, stateFile))
 	if errors.Is(err, os.ErrNotExist) {
 		return &State{}, nil
@@ -305,10 +474,51 @@ func (s *Store) LoadState() (*State, error) {
 	return st, nil
 }
 
-// SaveState atomically writes the state file with mode 0600.
-func (s *Store) SaveState(st *State) error {
+// LoadState reads the state file; a missing file yields an empty State. Writes
+// are atomic renames, so no lock is needed for a consistent snapshot; use
+// UpdateState for read-modify-write.
+func (s *Store) LoadState() (*State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.readState()
+}
+
+// UpdateState runs fn on the current state under an exclusive cross-process
+// file lock (state.lock in the config dir) and writes the result atomically
+// (0600). The state is re-read under the lock; LastCounters and SendCounter
+// are merged by MAX with what is on disk, so they never decrease. If fn
+// returns an error nothing is written and the error is returned.
+func (s *Store) UpdateState(fn func(*State) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	unlock, err := lockFile(filepath.Join(s.dir, lockName))
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	st, err := s.readState()
+	if err != nil {
+		return err
+	}
+	disk := make(map[string]uint64, len(st.LastCounters))
+	for k, v := range st.LastCounters {
+		disk[k] = v
+	}
+	diskSend := st.SendCounter
+	if err := fn(st); err != nil {
+		return err
+	}
+	for k, v := range disk {
+		if st.LastCounters == nil {
+			st.LastCounters = map[string]uint64{}
+		}
+		if st.LastCounters[k] < v {
+			st.LastCounters[k] = v
+		}
+	}
+	if st.SendCounter < diskSend {
+		st.SendCounter = diskSend
+	}
 	j := stateJSON{RelayURL: st.RelayURL, LastCounters: st.LastCounters, SendCounter: st.SendCounter}
 	if st.GroupID != ([16]byte{}) {
 		j.GroupID = fmt.Sprintf("%x", st.GroupID)
@@ -321,6 +531,42 @@ func (s *Store) SaveState(st *State) error {
 		return err
 	}
 	return writeFileAtomic(filepath.Join(s.dir, stateFile), b)
+}
+
+// SaveState overwrites the scalar fields (relay, group, roster) with st and
+// merges counters by MAX with the on-disk state, under the cross-process lock.
+func (s *Store) SaveState(st *State) error {
+	return s.UpdateState(func(cur *State) error {
+		cur.RelayURL, cur.GroupID, cur.RosterBlob = st.RelayURL, st.GroupID, st.RosterBlob
+		for k, v := range st.LastCounters {
+			if cur.LastCounters == nil {
+				cur.LastCounters = map[string]uint64{}
+			}
+			if cur.LastCounters[k] < v {
+				cur.LastCounters[k] = v
+			}
+		}
+		if cur.SendCounter < st.SendCounter {
+			cur.SendCounter = st.SendCounter
+		}
+		return nil
+	})
+}
+
+// SetLastCounter durably records an accepted counter from sender (max-merged).
+func (s *Store) SetLastCounter(sender [16]byte, c uint64) error {
+	return s.UpdateState(func(st *State) error { st.SetLastCounter(sender, c); return nil })
+}
+
+// NextSendCounter atomically increments the persisted send counter, durably
+// writes it, and only then returns it. Unique and increasing across processes.
+func (s *Store) NextSendCounter() (uint64, error) {
+	var n uint64
+	err := s.UpdateState(func(st *State) error { n = st.NextSendCounter(); return nil })
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // writeFileAtomic writes data to path via a 0600 temp file in the same dir,
