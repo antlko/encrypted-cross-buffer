@@ -1,0 +1,26 @@
+# EXAMPLE ONLY - review before use. systemd USER unit for `ecb run`.
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp contrib/ecb.service ~/.config/systemd/user/ecb.service   (edit ExecStart)
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ecb.service
+#   journalctl --user -u ecb -f
+# It must run inside your graphical session (it needs X11 / Wayland access to
+# the clipboard), hence a user unit bound to graphical-session.target.
+# No secrets here: the device key is in the keyring (or a 0600 file in
+# ~/.config/ecb on headless machines).
+[Unit]
+Description=ecb encrypted clipboard sync
+After=graphical-session.target network-online.target
+PartOf=graphical-session.target
+# A revoked device exits with an error; stop retrying after repeated failures.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+ExecStart=/usr/local/bin/ecb run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

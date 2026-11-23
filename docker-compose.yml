@@ -1,0 +1,69 @@
+# Production: relay + Cloudflare Tunnel sidecar. The relay port is NOT published;
+# only cloudflared (outbound connection) reaches it at http://relay:8080.
+#   docker compose --profile tunnel up -d --build
+# Local test without a tunnel: see docker-compose.local.yml.
+services:
+  relay:
+    build: .
+    image: ecb-relay:local
+    restart: unless-stopped
+    environment:
+      ECB_ENROLL_TOKEN: ${ECB_ENROLL_TOKEN:?set ECB_ENROLL_TOKEN in .env}
+      ECB_ADDR: ":8080"
+      ECB_DATA_DIR: /data
+      ECB_MAX_ITEM_BYTES: ${ECB_MAX_ITEM_BYTES:-33554432}
+      ECB_ITEM_TTL: ${ECB_ITEM_TTL:-10m}
+      # true only because traffic arrives via Cloudflare (CF-Connecting-IP).
+      ECB_TRUST_PROXY_HEADERS: ${ECB_TRUST_PROXY_HEADERS:-true}
+    expose:
+      - "8080"
+    volumes:
+      - ecb-data:/data
+    user: nonroot
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "/ecb-relay", "-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cloudflared:
+    # Pinned; bump deliberately (current when written: 2026.11.1).
+    image: cloudflare/cloudflared:2026.11.1
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      # Empty default only so that `up relay` works without a tunnel; with the
+      # tunnel profile an empty token makes cloudflared exit with an error.
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    depends_on:
+      relay:
+        condition: service_healthy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ecb-data:

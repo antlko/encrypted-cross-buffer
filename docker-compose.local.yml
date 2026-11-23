@@ -1,0 +1,10 @@
+# Local testing without a tunnel: publishes the relay on loopback only.
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+# (cloudflared has profile "tunnel" and is not started.)
+services:
+  relay:
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      # No proxy in front locally: do not trust forwarded-IP headers.
+      ECB_TRUST_PROXY_HEADERS: "false"

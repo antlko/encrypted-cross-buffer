@@ -5,8 +5,10 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +19,15 @@ import (
 )
 
 func main() {
+	hc := flag.Bool("healthcheck", false, "probe http://127.0.0.1:<port from ECB_ADDR>/healthz and exit 0 (healthy) or 1")
+	flag.Parse()
+	if *hc {
+		if err := healthcheck(os.Getenv("ECB_ADDR")); err != nil {
+			fmt.Fprintln(os.Stderr, "ecb-relay: healthcheck:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "ecb-relay:", err)
 		os.Exit(1)
@@ -53,6 +64,28 @@ func run() error {
 	defer cancel()
 	if err := hs.Shutdown(sctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
+	}
+	return nil
+}
+
+// healthcheck GETs /healthz on the loopback interface at the port of addr
+// (default :8080). It exists because the container image has no curl/wget.
+func healthcheck(addr string) error {
+	if addr == "" {
+		addr = ":8080"
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		return fmt.Errorf("bad ECB_ADDR %q", addr)
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + net.JoinHostPort("127.0.0.1", port) + "/healthz")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("status %d", resp.StatusCode)
 	}
 	return nil
 }

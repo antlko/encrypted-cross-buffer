@@ -1,0 +1,16 @@
+encrypted-cross-buffer (ecb)
+
+Third-party material embedded in this repository
+------------------------------------------------
+
+internal/pairing/wordlist.txt
+  The BIP-39 English wordlist (2048 words), from
+  https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt
+  SHA-256 2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda
+  Licensed under the MIT License. Copyright (c) the BIP-39 authors
+  (Bitcoin Improvement Proposal 39). Permission is hereby granted, free of
+  charge, to any person obtaining a copy of this list and associated
+  documentation files, to deal in it without restriction, subject to the
+  inclusion of this copyright notice and the MIT permission notice.
+
+Go module dependencies carry their own licences; see their repositories.

@@ -1,0 +1,16 @@
+.git
+.github
+.env
+.env.*
+*.env
+data
+docs
+bin
+dist
+coverage.out
+.idea
+.vscode
+.DS_Store
+.agent-context
+*.key
+*.pem

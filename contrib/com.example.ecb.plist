@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  EXAMPLE ONLY - review before use. macOS launchd user agent for `ecb run`.
+  Install:
+    cp contrib/com.example.ecb.plist ~/Library/LaunchAgents/com.example.ecb.plist
+    (edit the path to ecb below)
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.ecb.plist
+  Stop/remove:
+    launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.example.ecb.plist
+  Run it as a LaunchAgent (user session), not a LaunchDaemon: it needs your
+  pasteboard. It contains no secrets: the device key lives in the Keychain.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.example.ecb</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/ecb</string>
+    <string>run</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key>
+  <dict><key>SuccessfulExit</key><false/></dict>
+  <key>StandardErrorPath</key><string>/tmp/ecb.log</string>
+  <key>StandardOutPath</key><string>/tmp/ecb.log</string>
+</dict>
+</plist>
