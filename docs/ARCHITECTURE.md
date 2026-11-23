@@ -1,129 +1,97 @@
-# Architecture — encrypted-cross-buffer (ecb)
+# Architecture - encrypted-cross-buffer (ecb)
 
-Status: **proposed MVP design** (2026-11-23). Nothing implemented yet. Decisions → `docs/decisions/`,
-evidence → `docs/research/`. Facts marked ⏳ are external limits/versions to re-verify.
+Status: **as built** (the MVP is implemented). This is the short version; the full deep dive with diagrams, byte formats and the threat model is [TECHNICAL.md](TECHNICAL.md). Decisions are in [decisions/](decisions/), the original research in [research/](research/). Operations: [OPERATIONS.md](OPERATIONS.md). Security model: [SECURITY.md](SECURITY.md).
 
 ## 1. What it is
-E2EE clipboard sync between **one user's own devices** (macOS / Linux / Windows desktops first).
-Copy on device A → appears in the clipboard of devices B, C… Text (incl. 10k+ lines) and PNG images.
 
-## 2. Threat model
-- **Untrusted:** the relay server, Cloudflare (terminates TLS → sees everything on the wire), the
-  network, the corporate VPN. They must learn **no content, no content type, no pairing code, no keys**.
-- **They may learn (accepted metadata):** group id, device count and public keys, IPs, timing, item sizes,
-  which device sent an item.
-- **Trusted:** member devices. A compromised member device can read items and add/remove devices (MVP
-  accepts this; recovery = re-init the group).
-- **No forward secrecy** in MVP: items are encrypted to long-lived device X25519 keys; if a device key leaks,
-  previously captured ciphertexts (e.g. Cloudflare-side logs) become readable. Mitigation later: key rotation.
+End-to-end encrypted clipboard sync between **one person's own devices** (macOS, Linux and Windows desktops). Copy on device A, paste on B and C. Content types: UTF-8 text (including 10k+ lines) and PNG images up to 8 MiB. No files, no history, no mobile yet.
 
-## 3. Components
+## 2. Components
+
+```mermaid
+flowchart LR
+  A["Device A<br/>ecb run"] -- "HTTPS 443 outbound" --> CF["Cloudflare Tunnel"]
+  B["Device B<br/>ecb run"] -- "HTTPS 443 outbound" --> CF
+  CF --> R["ecb-relay<br/>auth, latest-item spool,<br/>notify, pairing mailbox"]
 ```
- ┌──────── device A (ecb daemon) ───────┐                    ┌──── device B ────┐
- │ clipboard watch → zstd → age(N recip)│  HTTPS 443 only     │ verify → decrypt │
- │ → frame+Ed25519 sig ─── PUT blob ────┼──► Cloudflare ──►  │ → apply clipboard│
- │                    ◄── WS notify ────┼─── Tunnel ──► ecb-relay ◄── GET blob ─┤
- └──────────────────────────────────────┘    (own server: disk spool, auth,     │
-                                               roster blob, pairing mailbox)    │
-```
-- `cmd/ecb` — desktop daemon + CLI (`init`, `pair`, `join`, `devices`, `pause`, `status`).
-- `cmd/ecb-relay` — the relay behind Cloudflare Tunnel. Dumb store-and-notify; never decrypts.
+
+- `cmd/ecb` - the CLI and the sync daemon: `init`, `pair`, `join`, `devices` (`rm`), `run`, `mode`, `pause`, `resume`, `status`, `doctor`, `version`.
+- `cmd/ecb-relay` - the relay. Store-and-forward only; configured by environment variables; never decrypts anything.
+- The relay runs in Docker next to a `cloudflared` sidecar. No port is published; devices only make outbound HTTPS connections, which is what lets a laptop behind a corporate VPN take part.
+
+## 3. Trust model (summary)
+
+| Party | Trusted? | Sees |
+| --- | --- | --- |
+| Member devices | yes (hold all keys) | everything in the group |
+| Relay, Cloudflare, network, corporate proxy | **no** | sealed items and metadata only: group id, device public keys, sender, time, size, IPs |
+
+Accepted: a compromised member can read new items and change membership; there is no forward secrecy; the relay can drop or delay items. See [SECURITY.md](SECURITY.md).
 
 ## 4. Transport (ADR-001, 002, 003)
-- **Relay-only in MVP.** Every device makes outbound HTTPS 443 connections only. This works on the
-  NordLayer laptop (no inbound/LAN, Tailscale failed) as long as outbound 443 to the Tunnel host works → **M0 smoke test**.
-- **Control channel:** WebSocket `/v1/ws` — tiny JSON notifications only (`{"t":"item","id","size","from"}`),
-  client ping every 25 s (⏳ Cloudflare idle ≈100 s), jittered exponential reconnect.
-  Behind a Go interface; fallback = long-poll `GET /v1/events?after=<seq>` if a proxy breaks WS.
-- **Data channel:** `PUT /v1/items/{id}` / `GET /v1/items/{id}` — one binary blob per item.
-  Relay streams the body to a temp file (`io.Copy`, `http.MaxBytesReader`), verifies the sender signature,
-  atomically renames it to the group's **latest** item, notifies other devices. GET serves from disk.
-  → relay memory ≈ one buffer per request; disk ≤ cap × groups.
-- **Limits:** cap **32 MiB** ciphertext (configurable, must stay < ⏳ Cloudflare 100 MB request limit);
-  **TTL 10 min**; replaced items deleted immediately.
-- **P2P is deferred**, cheap to add later because blobs are already E2E-encrypted and signed — only the
-  fetch path changes: P2P-1 same-LAN mDNS direct GET; P2P-2 pion/webrtc + TURN-over-TLS on a host
-  *not* behind the Tunnel (Cloudflare Tunnel cannot carry UDP/TURN). Neither helps the NordLayer laptop.
 
-## 5. Identity, pairing, relay auth (ADR-004…007)
-- **Device keys:** X25519 (age identity) + Ed25519 (signing), generated locally, stored in the OS keychain
-  (zalando/go-keyring; 0600 file fallback on headless Linux). `device_id = SHA-256(ed25519_pk)[:16]`.
-- **Sync group:** random 128-bit `group_id` + **roster** `{device_id, name, x25519_pk, ed25519_pk, added_by,
-  added_at}`, monotonic `version`, signed by a current member. All devices are equal. Roster is stored on
-  the relay **encrypted** (opaque blob).
-- **Create:** `ecb init --relay https://…` — relay requires a server-side enrollment secret
-  (`ECB_ENROLL_TOKEN`) to create a group → strangers can't use your relay.
-- **Add device (pairing):**
-  1. Paired device: `ecb pair` → relay opens a single-use mailbox (5 min, **one** PAKE attempt).
-  2. It shows a code like `7-orbit-velvet-candle` (mailbox nr + 3 words ≈ 33 bits).
-  3. New device: `ecb join 7-orbit-velvet-candle`. Both run PAKE (schollz/pake v3) via the mailbox, then
-     **mutual key confirmation** `HMAC(K, "ecb-pair-v1"‖role‖transcript)` — the lib lacks it, we add it.
-  4. New device sends its descriptor under K; existing device signs roster v+1, returns it under K,
-     and sends a signed `AddDevice` to the relay.
-  - Security: relay/Cloudflare get **one online guess (~2⁻³³)** per pairing; no offline brute force;
-    a MITM relay fails key confirmation.
-- **Relay auth:** challenge–response — device signs `"ecb-auth-v1"‖nonce‖group_id` with Ed25519 → short-lived
-  session token. Relay keeps allowed Ed25519 keys per group; changes only on member-signed requests.
-  Per-device rate limits. Only unauthenticated endpoint = an already-opened pairing mailbox.
-- **Revoke:** `ecb devices rm <name>` → signed roster v+1 + signed `RemoveDevice`; relay drops the key at once;
-  new items are no longer encrypted to it.
+- **Relay-only.** P2P is deferred (Cloudflare Tunnel carries HTTP and WebSocket only; a corporate-VPN laptop cannot be reached directly). See TECHNICAL section 12.
+- **Control channel:** `GET /v1/ws` WebSocket carrying tiny JSON events (`item`, `id`, `size`, `from`, `seq`), pings every 25 s, jittered backoff, resume with `?after=<seq>`. After 3 failed connections the client falls back to long-poll `GET /v1/events?after=&wait=25` for 5 minutes, then retries the WebSocket.
+- **Data channel:** `POST /v1/items` (one binary frame, `Content-Length` required) and `GET /v1/items/{id}`. The relay streams the upload to a temp file, verifies the signature while streaming, atomically renames it to the group's **latest** item and deletes the previous one. Memory per request is a small buffer.
+- **Limits:** 32 MiB per frame (`ECB_MAX_ITEM_BYTES`), TTL 10 minutes (`ECB_ITEM_TTL`), one item per group, 64 devices per group.
+
+## 5. Identity, pairing, relay auth (ADR-004 to 007)
+
+- **Device keys:** X25519 (age identity) and Ed25519 (signing), generated locally, kept in the OS keychain (or a 0600 file if allowed). `device_id = SHA-256(ed25519_pub)[:16]`.
+- **Group and roster:** random 128-bit group id; a roster (device id, name, both public keys, added_by, added_at) with a monotonic version, signed by a current member, stored on the relay **encrypted to the members**. Devices accept only a higher version signed by a member of the roster they hold; retained entries must not change.
+- **Create:** `ecb init --relay URL` needs the relay's `ECB_ENROLL_TOKEN` (typed or in the environment, never a flag).
+- **Add a device:** `ecb pair` opens a single-use mailbox on the relay (5 minutes) and shows `7-orbit-velvet-candle`; `ecb join` on the new device enters it. Both run a P-256 PAKE through the mailbox, then mutual HMAC key confirmation, then the new device's descriptor and the new signed roster are exchanged under AEAD. About 2^-33 chance of a successful guess per pairing; no offline attack.
+- **Relay auth:** the device signs `"ecb-auth-v1" || nonce || group_id` with Ed25519 and receives a 15-minute bearer token. The relay keeps the allowed key set per group and changes it only on a member-signed roster publish.
+- **Revoke:** `ecb devices rm NAME` publishes a signed roster without the device; the relay drops its tokens and connections at once; future items are not encrypted to it.
 
 ## 6. Payload format (ADR-008, 009)
-Inner plaintext (inside age):
-```
-ctype u8 (1=text/utf-8, 2=image/png) | comp u8 (0=none, 1=zstd) | raw_len u64 | body
-```
-- zstd per item (klauspost/compress), never across items (compression side channel); skip for PNG.
-- Receiver enforces `raw_len ≤ 256 MiB` before decompressing (zip-bomb guard).
 
-Encryption: **age v1 binary**, recipients = all roster devices (one file key, N wraps, STREAM
-ChaCha20-Poly1305, 64 KiB chunks, truncation-safe).
+Inner plaintext (inside age): `ctype u8 (1 text, 2 png) | comp u8 (0 none, 1 zstd) | raw_len u64 | body`. Text is zstd-compressed per item when that shrinks it; PNG is stored unchanged. The receiver caps `raw_len` and requires an exact decoded length.
 
-Outer frame v1 (big-endian, readable by relay):
-```
-magic "ECB1"(4) | ver u8=1 | flags u8 | group_id[16] | sender_id[16] | counter u64 | created_ms i64
-| ct_len u64 | age_ciphertext[ct_len] | sig[64]
-sig = Ed25519(sender_sk, "ecb-item-v1" ‖ header_bytes ‖ SHA-256(age_ciphertext))
-```
-- **Sender auth:** age has none → detached Ed25519 signature, checked by relay (before storing) and receiver
-  (before decrypting).
-- **Replay:** per-sender monotonic `counter`; receivers drop `≤ last seen`; items older than TTL+5 min dropped.
-- No JSON/base64 anywhere on the data path.
+Encryption: age v1 to all other roster devices (one file key, N wrapped copies, ChaCha20-Poly1305 STREAM in 64 KiB chunks).
 
-## 7. Clipboard (ADR-010)
-- Desktop: golang.design/x/clipboard `Watch` (text + PNG). ⏳ cgo need on darwin/linux unverified → check at M4.
-- **Loop prevention:** ignore watch events whose `SHA-256(ctype‖raw)` equals the last applied or last sent
-  item; 300 ms debounce.
-- Per-device mode: `both | send-only | receive-only | paused` (important for the work laptop / DLP).
-- **Mobile deferred:** iOS (no background reads, "Allow Paste" prompt) and Android 10+ (focused app / IME
-  only) → later as foreground share/paste + tap-to-copy notifications, with QR pairing.
+Outer frame v1 (62-byte header, then ciphertext, then 64-byte signature):
 
-## 8. Repo layout (planned)
 ```
-cmd/ecb/  cmd/ecb-relay/
-internal/frame/     # binary frame v1 encode/decode
-internal/envelope/  # zstd + age + Ed25519 sig + replay
-internal/pairing/   # PAKE + key confirmation + mailbox protocol
-internal/roster/    # signed roster
-internal/keystore/  # OS keychain
-internal/relay/     # server: auth, spool, TTL, notify
-internal/transport/ # ws + longpoll client
-internal/clip/      # clipboard watch/apply, loop prevention
-internal/client/    # daemon wiring
-test/integration/   # in-process relay + 2 clients
+"ECB1" | ver u8=1 | flags u8=0 | group_id[16] | sender_id[16] | counter u64 | created_ms i64 | ct_len u64
+| age_ciphertext[ct_len] | sig[64]
+sig = Ed25519(sender_sk, "ecb-item-v1" || header(62) || SHA-256(age_ciphertext))
 ```
 
-## 9. Milestones
-| M | Scope | Accept when | Review |
-| --- | --- | --- | --- |
-| **M0** | Throwaway relay (`/ws` echo + PUT/GET 30 MB) behind the real Tunnel, run from the NordLayer laptop with VPN on | DNS ok; WS alive 10 min with 25 s pings; 30 MB up/down byte-identical; note cert issuer (TLS inspection?) | — |
-| M1 | frame + envelope | round-trip text/PNG, multi-recipient; tampered header/ct/sig, wrong sender, replay, truncation, zstd bomb rejected; fuzz parser | **mandatory** |
-| M2 | relay + transport | in-process relay + 2 clients: 20 MB A→B identical; relay heap growth < 8 MiB; expired → 404; oversize → 413 | recommended |
-| M3 | identity, pairing, roster, relay auth | pairing ok; wrong code fails & mailbox burned; MITM relay fails confirmation; unauth device rejected; revocation immediate | **mandatory** |
-| M4 | desktop daemon | 10k lines + screenshot each way < 3 s across macOS, work laptop, 1 more OS; no loops | optional |
-| M5 | hardening | long-poll fallback, backoff, pause, size notice, content-free logs | optional |
+The relay and the receiver both verify the signature; the receiver does it **before** decrypting. Replay protection: per-sender counter must increase, and items older than TTL + 5 minutes or more than 5 minutes in the future are rejected.
 
-Later: LAN P2P, mobile + QR, hotkey mode, size padding, key rotation.
+## 7. Daemon and clipboard (ADR-010, 011)
 
-## 10. Open questions (owner: user)
-See `.agent-context/CURRENT.md` → "Open questions".
+- Clipboard access through `golang.design/x/clipboard` (no cgo): text and PNG; password-manager "sensitive" items are never synced.
+- Per-device mode in `config.json`: `both`, `send-only`, `receive-only`, `paused` (changed with `ecb mode`, applied within about 2 s). Local size limits `max_text_bytes` and `max_image_bytes` default to 8 MiB.
+- **Loop prevention:** SHA-256 of kind plus content of the last applied and last sent item, a 300 ms debounce, a 1.5 s echo window after applying, and de-duplication of the last 256 item ids.
+- Roster refreshed at startup, every 5 minutes, on events from unknown or stale senders, and before sending.
+
+## 8. Repository layout
+
+```
+cmd/ecb/             CLI and daemon entry point
+cmd/ecb-relay/       relay entry point and container health check
+internal/frame/      binary frame v1: streaming writer and verifier
+internal/envelope/   zstd + age + sign/verify, replay and size checks
+internal/roster/     signed device roster
+internal/keystore/   identity (keychain or file), local state, file lock
+internal/pairing/    codes, PAKE, key confirmation, inviter and joiner
+internal/relay/      server: auth, groups, spool, event hub, mailboxes, rate limits
+internal/client/     relay client: auth, items, roster, WebSocket, long-poll, mailbox
+internal/daemon/     sync loop, modes, config
+internal/clip/       OS clipboard and a test-only file-backed fake
+test/integration/    in-process relay and clients (go test)
+test/e2e/            shell test with real binaries and fake clipboards (make e2e)
+contrib/             autostart examples (launchd, systemd user unit, Windows Task Scheduler)
+```
+
+There is no separate transport package: the WebSocket and long-poll transports live in `internal/client`.
+
+## 9. Testing and delivery
+
+`make test` (unit and integration), `make race`, `make vet`, `make fmt`, `make e2e`. CI (`.github/workflows/ci.yml`): gofmt, vet, `go test -race`, cross-builds of `ecb` (linux amd64/arm64, macOS arm64, Windows amd64), relay build, Docker build and `govulncheck`. Notable tests: relay heap stays flat during a 30 MiB upload (`TestRelayMemoryConstant`), oversize and expiry behaviour, pairing with a malicious relay, revocation, round trips across the relay.
+
+## 10. Known gaps and future work
+
+No forward secrecy or key rotation; no mobile app; no file transfer; no P2P (LAN or WebRTC); no metrics endpoint; no pre-built release binaries; no padding of item sizes. Details and the P2P design sketch: [TECHNICAL.md](TECHNICAL.md#19-limitations-and-non-goals).

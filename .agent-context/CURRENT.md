@@ -1,30 +1,25 @@
-# CURRENT — encrypted-cross-buffer
+# CURRENT - encrypted-cross-buffer
 
 ## Request (2026-11-23)
-Initial research + agent infrastructure + base docs so future sessions don't re-research.
-Cross-platform E2EE clipboard sync based on Curve25519 (reference: github.com/antlko/go-e2ee-chat).
+Build the complete app (desktop `ecb` + `ecb-relay`), deploy with docker compose behind Cloudflare Tunnel.
+Docs in English, beginner-friendly install (style of github.com/antlko/learn-hungarian-ai), diagrams + full
+technical docs. No secrets in git. Text + small PNG images only; files = future P2P feature. Use subagents.
 
-## User requirements
-1. One laptop on corporate NordLayer VPN; unreachable via LAN/Tailscale. Must still work.
-2. Large texts (10k+ lines) and images; efficient encode/decode.
-3. Own server + Cloudflare Tunnel; nobody outside learns anything; user-friendly + secure device login.
-3.1 Research: direct device-to-device to avoid streaming through / clogging the server.
-4. Global `team-workflow` skill.
+## Status (end of session 1)
+- DONE + committed: crypto core, relay, client lib, pairing (PAKE p256 + HMAC confirmation), daemon, CLI,
+  `ecb doctor`, Docker/compose/CI, e2e script. Reviews: M1 core (fixed), full security review (fixed),
+  re-review of fixes (see git log for result).
+- Docs: README.md, docs/{TECHNICAL,OPERATIONS,SECURITY,ARCHITECTURE}.md, ADR-001..011 accepted + "As built".
+- Verification run: gofmt, go vet, `go test ./... -race`, `make e2e` (3 processes, 10k lines < 1 s, no echo
+  loop, revoke), docker build + compose local run healthy (image ~9 MB, nonroot, read-only FS).
 
-## Status
-- DONE: research (docs/research/*), architecture (docs/ARCHITECTURE.md), ADR-001…010 (proposed),
-  CLAUDE.md, global skill ~/.claude/skills/team-workflow/SKILL.md.
-- NEXT: M0 — connectivity smoke test from the NordLayer laptop (WS 10 min + 30 MB PUT/GET via Tunnel).
-- Before M3: verify schollz/pake v3 curve/API. Before M4: verify golang.design/x/clipboard cgo needs.
+## NOT verified yet (needs the user's machines)
+1. Real Cloudflare Tunnel + the work laptop behind NordLayer: run `ecb doctor` there FIRST.
+2. Real OS clipboard (macOS/Windows/Linux, `Sensitive` flag, PNG screenshots) and real keychain.
+3. Windows/Linux daemon smoke. govulncheck: clean on Go 1.26.11 (go.mod pins `toolchain go1.26.11`; CI uses latest 1.26.x; x/image bumped).
+4. CI workflow never ran on GitHub; actions/images pinned by tag, not digest.
 
-## Decisions taken 2026-11-23 (user said: build everything, docker compose deploy)
-- Pairing code: generated one-time (+ optional --code). Device mode default `both`, per-device `send-only|receive-only|paused`.
-- Limits: relay 32 MiB / TTL 10 min; images PNG only <=8 MiB (ADR-011); no files.
-- Docs in English, README beginner-friendly like github.com/antlko/learn-hungarian-ai, with mermaid diagrams. No secrets in git.
-- Deploy: docker compose (relay + cloudflared sidecar).
-
-## Open questions (resolved above; kept for history)
-1. Pairing code: generated one-time (recommended) vs user-invented (`--code` override)?
-2. Work laptop policy/DLP: default mode both vs send-only/receive-only?
-3. Limits: 32 MiB cap, 10 min TTL — OK?
-4. Images in MVP: PNG only — OK?
+## Backlog
+Release binaries (goreleaser), P2P file transfer (LAN mDNS then WebRTC; own ADR), mobile (foreground share
++ QR pairing), key rotation (retained roster entries are immutable now), size padding, Cyrillic/NFC
+homograph device names, optional Cloudflare Access service tokens.

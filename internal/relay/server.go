@@ -259,7 +259,7 @@ func (s *Server) clientIP(r *http.Request) string {
 		}
 	}
 	if ap, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
-		return ap.Addr().Unmap().WithZone("").String()
+		return limiterKey(ap.Addr())
 	}
 	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return h
@@ -272,7 +272,18 @@ func parseIPLiteral(v string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	return a.Unmap().WithZone("").String(), true
+	return limiterKey(a), true
+}
+
+// limiterKey is the rate-limit key for an address: IPv4 as is, IPv6 reduced to
+// its /64 prefix, because a single host or LAN routinely owns a whole /64 and
+// would otherwise get unlimited fresh limiter keys.
+func limiterKey(a netip.Addr) string {
+	a = a.Unmap().WithZone("")
+	if a.Is6() {
+		return netip.PrefixFrom(a, 64).Masked().String()
+	}
+	return a.String()
 }
 
 // connCtx is cancelled with errRevoked when the device is removed, or with

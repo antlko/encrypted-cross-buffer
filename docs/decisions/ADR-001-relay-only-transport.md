@@ -1,5 +1,5 @@
 # ADR-001 Relay-only transport for MVP; P2P deferred
-Status: proposed · 2026-11-23
+Status: accepted · 2026-11-23
 
 **Context:** NordLayer work laptop has no inbound/LAN reachability (Tailscale failed); Cloudflare Tunnel carries HTTP/WS only, no UDP/TURN. See research/2026-11-23-transport-nat-cloudflare.md.
 **Decision:** all devices connect outbound HTTPS 443 to our relay behind Cloudflare Tunnel. No P2P in MVP.

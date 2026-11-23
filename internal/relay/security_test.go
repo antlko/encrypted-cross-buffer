@@ -54,9 +54,11 @@ func TestClientIP(t *testing.T) {
 		{"trusted ignores XFF", trusted, "9.9.9.9:1", map[string]string{"X-Forwarded-For": "1.2.3.4"}, "9.9.9.9"},
 		{"hostname rejected", trusted, "9.9.9.9:1", map[string]string{"CF-Connecting-IP": "localhost"}, "9.9.9.9"},
 		{"garbage rejected", trusted, "9.9.9.9:1", map[string]string{"CF-Connecting-IP": "1.2.3.4, evil"}, "9.9.9.9"},
-		{"ipv6 zone stripped", trusted, "9.9.9.9:1", map[string]string{"CF-Connecting-IP": "fe80::1%eth0"}, "fe80::1"},
+		{"ipv6 zone stripped", trusted, "9.9.9.9:1", map[string]string{"CF-Connecting-IP": "fe80::1%eth0"}, "fe80::/64"},
 		{"ipv4-mapped normalised", trusted, "9.9.9.9:1", map[string]string{"CF-Connecting-IP": "::ffff:1.2.3.4"}, "1.2.3.4"},
-		{"remote ipv6", untrusted, "[2001:db8::1]:5", nil, "2001:db8::1"},
+		{"remote ipv6 keyed by /64", untrusted, "[2001:db8::1]:5", nil, "2001:db8::/64"},
+		{"same /64 shares a key", untrusted, "[2001:db8::ffff:1:2:3]:5", nil, "2001:db8::/64"},
+		{"other /64 differs", untrusted, "[2001:db8:0:1::1]:5", nil, "2001:db8:0:1::/64"},
 	}
 	for _, c := range cases {
 		if got := c.s.clientIP(req(c.remote, c.hdr)); got != c.want {
