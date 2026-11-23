@@ -17,7 +17,13 @@ Cross-platform E2EE clipboard sync based on Curve25519 (reference: github.com/an
 - NEXT: M0 — connectivity smoke test from the NordLayer laptop (WS 10 min + 30 MB PUT/GET via Tunnel).
 - Before M3: verify schollz/pake v3 curve/API. Before M4: verify golang.design/x/clipboard cgo needs.
 
-## Open questions (user)
+## Decisions taken 2026-11-23 (user said: build everything, docker compose deploy)
+- Pairing code: generated one-time (+ optional --code). Device mode default `both`, per-device `send-only|receive-only|paused`.
+- Limits: relay 32 MiB / TTL 10 min; images PNG only <=8 MiB (ADR-011); no files.
+- Docs in English, README beginner-friendly like github.com/antlko/learn-hungarian-ai, with mermaid diagrams. No secrets in git.
+- Deploy: docker compose (relay + cloudflared sidecar).
+
+## Open questions (resolved above; kept for history)
 1. Pairing code: generated one-time (recommended) vs user-invented (`--code` override)?
 2. Work laptop policy/DLP: default mode both vs send-only/receive-only?
 3. Limits: 32 MiB cap, 10 min TTL — OK?
