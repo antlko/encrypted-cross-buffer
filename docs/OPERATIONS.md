@@ -121,7 +121,7 @@ The data volume persists. In-flight items (at most one per group, at most 10 min
 
 `cloudflared`: edit the pinned tag in `docker-compose.yml` deliberately (look at Cloudflare's release notes), then `docker compose --profile tunnel up -d`.
 
-Clients: rebuild `ecb` from the new source (`git pull && make build`) and replace the binary; restart `ecb run` (or your service). The frame format is version 1; receivers reject unknown versions, so read the release notes before upgrading across a change that bumps it, and upgrade all devices before relying on a new content type. Mixed versions are fine as long as the wire format has not changed.
+Clients: download the new archive from the Releases page (or rebuild from source with `git pull && make build`) and replace the binary; restart `ecb run` (or your service). The frame format is version 1; receivers reject unknown versions, so read the release notes before upgrading across a change that bumps it, and upgrade all devices before relying on a new content type. Mixed versions are fine as long as the wire format has not changed.
 
 ## What is and is not logged
 
@@ -213,3 +213,14 @@ If you still have **one** device, nothing is lost: pair new devices from it and 
 | WebSocket drops every minute or two | `ecb doctor` | Network idles out connections. The client pings every 25 s and falls back to long-poll after 3 failures; check for a proxy that kills idle connections. |
 | Relay disk fills | `docker system df -v` | Unexpected; check for many groups, and for stuck `tmp-*` files under `items/`. Restarting the relay clears the spool. |
 | Need a clean slate on a device | - | Stop `ecb run`, remove the config folder (`ecb status` prints it) and the `ecb` keychain entry, then `ecb join` again. |
+
+## Releases and the container image
+
+Pushing a tag such as `v1.0.1` starts `.github/workflows/release.yml`. It runs the tests, builds `ecb` archives
+(linux amd64/arm64, macOS amd64/arm64, windows amd64) and `ecb-relay` archives (linux amd64/arm64), publishes a
+multi-arch image to `ghcr.io/antlko/encrypted-cross-buffer` (tags `1.0.1`, `1.0`, `1`, `latest`) and creates a
+GitHub Release with `SHA256SUMS`. Running the workflow by hand, or pushing changes to `release.yml`, the `Dockerfile`
+or `go.mod` to `main`, does a dry run that builds everything and publishes nothing.
+
+To run the published image instead of building it, replace `build: .` in the `relay` service of `docker-compose.yml`
+with `image: ghcr.io/antlko/encrypted-cross-buffer:1.0.0` (pin an exact version).

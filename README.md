@@ -131,9 +131,19 @@ You should see `ok`. Use `http://127.0.0.1:8080` as the relay URL below. No `TUN
 
 ### 2. Install `ecb` on each computer
 
-There are no pre-built release binaries yet, so you build it yourself. You need **Go 1.26 or newer** (see https://go.dev/dl/). No C compiler is needed.
+**Pick one.** The easiest way is to download a ready-made binary from the [Releases page](https://github.com/antlko/encrypted-cross-buffer/releases). To build it yourself you need **Go 1.26 or newer** (see https://go.dev/dl/); no C compiler is needed.
 
-**Pick one:**
+- **Download a release (macOS, Linux, Windows):** open the latest release, download the archive for your system (`ecb_<version>_<os>_<arch>`: `darwin_arm64` for Apple Silicon Macs, `darwin_amd64` for Intel Macs, `linux_amd64`, `linux_arm64`, `windows_amd64`), and check it against `SHA256SUMS` from the same page.
+
+  ```bash
+  # macOS / Linux example (replace the file name with the one you downloaded)
+  shasum -a 256 -c SHA256SUMS --ignore-missing
+  tar -xzf ecb_v1.0.0_darwin_arm64.tar.gz
+  sudo install -m 0755 ecb_v1.0.0_darwin_arm64/ecb /usr/local/bin/ecb
+  ecb version
+  ```
+
+  You should see `ecb v1.0.0`. On Windows, unzip the archive and put `ecb.exe` in a folder that is on your `PATH`. *macOS may warn that the binary is from an unidentified developer because it is not notarized; run `xattr -d com.apple.quarantine /usr/local/bin/ecb` once, or build from source.*
 
 - **Build from source (macOS and Linux):**
 
@@ -145,7 +155,7 @@ There are no pre-built release binaries yet, so you build it yourself. You need 
   ecb version
   ```
 
-  You should see `ecb dev`.
+  You should see `ecb dev` (a build from source has no release version).
 
 - **Build from source (Windows, PowerShell, no `make`):**
 
@@ -158,7 +168,7 @@ There are no pre-built release binaries yet, so you build it yourself. You need 
 
   Put `ecb.exe` in a folder that is on your `PATH` (for example `C:\Tools`).
 
-- **`go install`** (works once the repository is public and reachable by the Go proxy):
+- **`go install`** (needs Go; installs the latest tagged version):
 
   ```bash
   go install github.com/antlko/encrypted-cross-buffer/cmd/ecb@latest
