@@ -8,8 +8,8 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/envelope"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/keystore"
+	"github.com/antlko/encrypted-cross-buffer/internal/envelope"
+	"github.com/antlko/encrypted-cross-buffer/internal/keystore"
 )
 
 // ErrNoRecipients means the roster has no device other than this one.

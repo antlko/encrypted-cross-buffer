@@ -16,7 +16,7 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
 
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/roster"
+	"github.com/antlko/encrypted-cross-buffer/internal/roster"
 )
 
 const (

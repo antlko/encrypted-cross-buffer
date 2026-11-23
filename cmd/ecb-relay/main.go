@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/relay"
+	"github.com/antlko/encrypted-cross-buffer/internal/relay"
 )
 
 func main() {

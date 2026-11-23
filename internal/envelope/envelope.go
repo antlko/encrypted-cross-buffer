@@ -26,7 +26,7 @@ import (
 	"filippo.io/age"
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/frame"
+	"github.com/antlko/encrypted-cross-buffer/internal/frame"
 )
 
 // Content types.

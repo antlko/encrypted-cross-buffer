@@ -1,12 +1,14 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.26 AS build
+FROM --platform=$BUILDPLATFORM golang:1.26 AS build
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 # Module cache layer: only re-downloaded when go.mod/go.sum change.
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags "-s -w" \
     -o /out/ecb-relay ./cmd/ecb-relay
 # Empty data dir owned by distroless "nonroot" (uid/gid 65532).
 RUN mkdir /out/data

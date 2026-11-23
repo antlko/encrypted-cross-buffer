@@ -1,4 +1,4 @@
-module github.com/anatolkzh/encrypted-cross-buffer
+module github.com/antlko/encrypted-cross-buffer
 
 go 1.26.0
 

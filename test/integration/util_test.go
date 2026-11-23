@@ -5,8 +5,8 @@ import (
 
 	"encoding/base64"
 	"encoding/hex"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/keystore"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/relay"
+	"github.com/antlko/encrypted-cross-buffer/internal/keystore"
+	"github.com/antlko/encrypted-cross-buffer/internal/relay"
 )
 
 func hexs(b []byte) string { return hex.EncodeToString(b) }

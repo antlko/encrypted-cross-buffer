@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/client"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/doctor"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/roster"
+	"github.com/antlko/encrypted-cross-buffer/internal/client"
+	"github.com/antlko/encrypted-cross-buffer/internal/doctor"
+	"github.com/antlko/encrypted-cross-buffer/internal/roster"
 )
 
 func cmdDoctor(args []string) error {

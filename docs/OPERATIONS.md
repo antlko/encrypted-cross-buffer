@@ -11,7 +11,7 @@ Requirements: a host with Docker Engine and the Compose plugin (`docker compose 
 1. **Get the code.**
 
    ```bash
-   git clone https://github.com/anatolkzh/encrypted-cross-buffer.git
+   git clone https://github.com/antlko/encrypted-cross-buffer.git
    cd encrypted-cross-buffer
    ```
 

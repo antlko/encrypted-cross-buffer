@@ -15,8 +15,8 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/envelope"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/frame"
+	"github.com/antlko/encrypted-cross-buffer/internal/envelope"
+	"github.com/antlko/encrypted-cross-buffer/internal/frame"
 )
 
 const maxRosterBody = 2 << 20

@@ -21,10 +21,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/envelope"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/keystore"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/relay"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/roster"
+	"github.com/antlko/encrypted-cross-buffer/internal/envelope"
+	"github.com/antlko/encrypted-cross-buffer/internal/keystore"
+	"github.com/antlko/encrypted-cross-buffer/internal/relay"
+	"github.com/antlko/encrypted-cross-buffer/internal/roster"
 )
 
 // RosterProvider returns the device's current verified roster (recipients and

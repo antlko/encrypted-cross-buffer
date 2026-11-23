@@ -38,7 +38,7 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/frame"
+	"github.com/antlko/encrypted-cross-buffer/internal/frame"
 )
 
 const (

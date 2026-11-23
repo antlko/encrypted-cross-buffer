@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/client"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/envelope"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/relay"
+	"github.com/antlko/encrypted-cross-buffer/internal/client"
+	"github.com/antlko/encrypted-cross-buffer/internal/envelope"
+	"github.com/antlko/encrypted-cross-buffer/internal/relay"
 )
 
 func TestMailboxFlowAndBurn(t *testing.T) {

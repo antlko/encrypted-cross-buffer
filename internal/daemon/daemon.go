@@ -20,12 +20,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/client"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/clip"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/envelope"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/frame"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/keystore"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/roster"
+	"github.com/antlko/encrypted-cross-buffer/internal/client"
+	"github.com/antlko/encrypted-cross-buffer/internal/clip"
+	"github.com/antlko/encrypted-cross-buffer/internal/envelope"
+	"github.com/antlko/encrypted-cross-buffer/internal/frame"
+	"github.com/antlko/encrypted-cross-buffer/internal/keystore"
+	"github.com/antlko/encrypted-cross-buffer/internal/roster"
 )
 
 // ErrRevoked is returned by Run when the relay permanently refuses this

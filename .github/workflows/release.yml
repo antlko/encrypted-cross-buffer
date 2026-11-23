@@ -1,0 +1,149 @@
+name: release
+
+# Tag a version (git tag v1.2.3 && git push origin v1.2.3) to:
+#   1. run the tests,
+#   2. build ecb binaries (linux/macOS/windows) and ecb-relay (linux),
+#   3. build and push a multi-arch container image to ghcr.io,
+#   4. publish a GitHub Release with the archives and SHA256SUMS.
+# "Run workflow" (workflow_dispatch) does a DRY RUN: everything is built, nothing is pushed or published.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - name: vet and test
+        run: |
+          go vet ./...
+          go test ./... -race -count=1
+
+  binaries:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - {cmd: ecb,       goos: linux,   goarch: amd64}
+          - {cmd: ecb,       goos: linux,   goarch: arm64}
+          - {cmd: ecb,       goos: darwin,  goarch: amd64}
+          - {cmd: ecb,       goos: darwin,  goarch: arm64}
+          - {cmd: ecb,       goos: windows, goarch: amd64}
+          - {cmd: ecb-relay, goos: linux,   goarch: amd64}
+          - {cmd: ecb-relay, goos: linux,   goarch: arm64}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - name: build and package
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CMD: ${{ matrix.cmd }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          [ "${GITHUB_REF_TYPE}" = "tag" ] || VERSION="dev-${GITHUB_SHA::7}"
+          NAME="${CMD}_${VERSION}_${GOOS}_${GOARCH}"
+          EXT=""; [ "${GOOS}" = "windows" ] && EXT=".exe"
+          mkdir -p "dist/${NAME}"
+          go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "dist/${NAME}/${CMD}${EXT}" "./cmd/${CMD}"
+          cp LICENSE README.md "dist/${NAME}/"
+          cd dist
+          if [ "${GOOS}" = "windows" ]; then zip -qr "${NAME}.zip" "${NAME}"; else tar -czf "${NAME}.tar.gz" "${NAME}"; fi
+          rm -rf "${NAME}"
+          ls -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.cmd }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  container:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: log in to ghcr.io
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=sha,prefix=sha-,enable=${{ !startsWith(github.ref, 'refs/tags/v') }}
+          labels: |
+            org.opencontainers.image.title=ecb-relay
+            org.opencontainers.image.description=Untrusted relay for end-to-end encrypted clipboard sync
+            org.opencontainers.image.licenses=MIT
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [binaries, container]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: dist
+          merge-multiple: true
+      - name: checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+      - name: publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          NOTES="Container image: \`ghcr.io/${REPO}:${TAG#v}\` (linux/amd64, linux/arm64).
+          Verify downloads with \`SHA256SUMS\`. See the README for install steps."
+          PRE=""; case "${TAG}" in *-*) PRE="--prerelease";; esac
+          gh release create "${TAG}" dist/* --repo "${REPO}" --title "${TAG}" --generate-notes --notes "${NOTES}" ${PRE}

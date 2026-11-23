@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/frame"
+	"github.com/antlko/encrypted-cross-buffer/internal/frame"
 )
 
 func newTestServer(t *testing.T, mod func(*Config)) *Server {

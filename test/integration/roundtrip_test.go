@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/client"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/envelope"
+	"github.com/antlko/encrypted-cross-buffer/internal/client"
+	"github.com/antlko/encrypted-cross-buffer/internal/envelope"
 )
 
 func recvItem(t *testing.T, ch <-chan client.Event, id string) client.Event {

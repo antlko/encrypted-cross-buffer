@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/client"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/keystore"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/roster"
+	"github.com/antlko/encrypted-cross-buffer/internal/client"
+	"github.com/antlko/encrypted-cross-buffer/internal/keystore"
+	"github.com/antlko/encrypted-cross-buffer/internal/roster"
 )
 
 // newFlagSet returns a FlagSet that prints its help to stdout and returns

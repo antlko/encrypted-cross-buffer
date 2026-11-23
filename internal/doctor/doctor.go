@@ -21,7 +21,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/client"
+	"github.com/antlko/encrypted-cross-buffer/internal/client"
 )
 
 // Status of one step.

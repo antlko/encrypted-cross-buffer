@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/client"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/keystore"
+	"github.com/antlko/encrypted-cross-buffer/internal/client"
+	"github.com/antlko/encrypted-cross-buffer/internal/keystore"
 )
 
 // A CLI roster write (ecb pair / devices rm) made while a long-running client

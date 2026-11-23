@@ -76,7 +76,7 @@ You need: a computer or server that can run Docker (for the relay), and a free C
 1. Get the code on the server and go into it.
 
    ```bash
-   git clone https://github.com/anatolkzh/encrypted-cross-buffer.git
+   git clone https://github.com/antlko/encrypted-cross-buffer.git
    cd encrypted-cross-buffer
    ```
 
@@ -120,7 +120,7 @@ You need: a computer or server that can run Docker (for the relay), and a free C
 This publishes the relay on `127.0.0.1:8080` only. It is good for trying `ecb` out on one machine. *It is plain HTTP and not reachable from other computers.*
 
 ```bash
-git clone https://github.com/anatolkzh/encrypted-cross-buffer.git
+git clone https://github.com/antlko/encrypted-cross-buffer.git
 cd encrypted-cross-buffer
 cp .env.example .env            # set ECB_ENROLL_TOKEN (use: openssl rand -hex 24)
 docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
@@ -138,7 +138,7 @@ There are no pre-built release binaries yet, so you build it yourself. You need 
 - **Build from source (macOS and Linux):**
 
   ```bash
-  git clone https://github.com/anatolkzh/encrypted-cross-buffer.git
+  git clone https://github.com/antlko/encrypted-cross-buffer.git
   cd encrypted-cross-buffer
   make build
   sudo install -m 0755 bin/ecb /usr/local/bin/ecb
@@ -150,7 +150,7 @@ There are no pre-built release binaries yet, so you build it yourself. You need 
 - **Build from source (Windows, PowerShell, no `make`):**
 
   ```powershell
-  git clone https://github.com/anatolkzh/encrypted-cross-buffer.git
+  git clone https://github.com/antlko/encrypted-cross-buffer.git
   cd encrypted-cross-buffer
   go build -trimpath -ldflags "-s -w" -o ecb.exe ./cmd/ecb
   .\ecb.exe version
@@ -161,7 +161,7 @@ There are no pre-built release binaries yet, so you build it yourself. You need 
 - **`go install`** (works once the repository is public and reachable by the Go proxy):
 
   ```bash
-  go install github.com/anatolkzh/encrypted-cross-buffer/cmd/ecb@latest
+  go install github.com/antlko/encrypted-cross-buffer/cmd/ecb@latest
   ```
 
   The binary lands in `$(go env GOPATH)/bin`; make sure that folder is on your `PATH`.

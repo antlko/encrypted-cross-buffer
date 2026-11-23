@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/roster"
+	"github.com/antlko/encrypted-cross-buffer/internal/roster"
 )
 
 type fakeKR struct {

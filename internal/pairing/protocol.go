@@ -15,8 +15,8 @@ import (
 
 	"filippo.io/age"
 
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/keystore"
-	"github.com/anatolkzh/encrypted-cross-buffer/internal/roster"
+	"github.com/antlko/encrypted-cross-buffer/internal/keystore"
+	"github.com/antlko/encrypted-cross-buffer/internal/roster"
 )
 
 // MailboxAPI is the subset of the relay's mailbox API that pairing needs
