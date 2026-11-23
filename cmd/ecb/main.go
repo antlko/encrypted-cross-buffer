@@ -40,6 +40,7 @@ func init() {
 		{"pause", "stop syncing (same as `mode paused`)", func(a []string) error { return cmdSetMode("pause", ModePausedName, a) }},
 		{"resume", "resume syncing (same as `mode both`)", func(a []string) error { return cmdSetMode("resume", "both", a) }},
 		{"status", "show relay reachability, group, devices, mode", cmdStatus},
+		{"doctor", "check whether the relay is reachable from this network (DNS, TLS, WebSocket...)", cmdDoctor},
 		{"version", "print the version", cmdVersion},
 	}
 }

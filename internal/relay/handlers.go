@@ -245,7 +245,7 @@ func (s *Server) postItem(w http.ResponseWriter, r *http.Request, sess *session)
 	}
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Now().Add(2*time.Minute + time.Duration(cl/(64<<10))*time.Second))
-	body := http.MaxBytesReader(w, r.Body, cl)
+	body := &countReader{r: http.MaxBytesReader(w, r.Body, cl)}
 
 	tmp, err := s.items.newTemp(sess.gid)
 	if err != nil {
@@ -296,13 +296,20 @@ func (s *Server) postItem(w http.ResponseWriter, r *http.Request, sess *session)
 		}
 		return
 	}
+	if body.n != cl {
+		writeErr(w, http.StatusBadRequest, "invalid item")
+		return
+	}
 	if err := tmp.Close(); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	if s.afterVerify != nil {
+		s.afterVerify()
+	}
 	var meta *itemMeta
 	err = s.groups.whileMember(sess.gid, sess.pub, func() (e error) {
-		meta, e = s.items.commit(sess.gid, tmp.Name(), devHex, cl)
+		meta, e = s.items.commit(sess.gid, tmp.Name(), devHex, body.n)
 		return e
 	})
 	if err != nil {
@@ -317,6 +324,18 @@ func (s *Server) postItem(w http.ResponseWriter, r *http.Request, sess *session)
 	s.hub.publish(sess.gid, Event{T: "item", ID: meta.id, Size: meta.size, From: devHex})
 	ctrlDeadlines(w, 20*time.Second)
 	writeJSON(w, http.StatusOK, map[string]any{"id": meta.id, "size": meta.size})
+}
+
+// countReader counts the bytes actually read from the request body.
+type countReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 func (s *Server) getItem(w http.ResponseWriter, r *http.Request, sess *session) {
@@ -535,6 +554,10 @@ func (s *Server) pairPost(w http.ResponseWriter, r *http.Request) {
 	case pairOK:
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	case pairFull:
+		if !s.lim.pairBurn.allow(s.clientIP(r)) {
+			writeErr(w, http.StatusTooManyRequests, "too many requests")
+			return
+		}
 		s.pairs.burn(id)
 		writeErr(w, http.StatusTooManyRequests, "mailbox full")
 	default:
@@ -579,6 +602,10 @@ func (s *Server) pairGet(w http.ResponseWriter, r *http.Request) {
 func (s *Server) pairBurn(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.pairID(w, r)
 	if !ok {
+		return
+	}
+	if !s.lim.pairBurn.allow(s.clientIP(r)) {
+		writeErr(w, http.StatusTooManyRequests, "too many requests")
 		return
 	}
 	s.pairs.burn(id)

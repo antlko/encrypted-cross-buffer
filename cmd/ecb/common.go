@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -105,10 +106,10 @@ func (l *local) saveRoster(r *roster.Roster) error {
 	if err != nil {
 		return err
 	}
-	if err := l.store.UpdateState(func(s *keystore.State) error { s.RosterBlob = blob; return nil }); err != nil {
+	if err := l.store.UpdateState(func(s *keystore.State) error { s.RosterBlob, s.RosterVersion = blob, r.Version; return nil }); err != nil {
 		return err
 	}
-	l.ros, l.state.RosterBlob = r, blob
+	l.ros, l.state.RosterBlob, l.state.RosterVersion = r, blob, r.Version
 	return nil
 }
 
@@ -142,17 +143,29 @@ func friendlyNet(err error, relayURL string) error {
 	return fmt.Errorf("cannot reach the relay at %s: %w", relayURL, err)
 }
 
-func normaliseRelay(s string) (string, error) {
+// isLoopbackHost reports whether host is localhost or a loopback IP literal.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	a, err := netip.ParseAddr(host)
+	return err == nil && a.Unmap().IsLoopback()
+}
+
+// normaliseRelay validates the relay URL. Plain http is refused for
+// non-loopback hosts unless insecure is set: the enroll token and device
+// authentication travel in headers and must not cross a network in clear.
+func normaliseRelay(s string, insecure bool) (string, error) {
 	s = strings.TrimRight(strings.TrimSpace(s), "/")
 	u, err := url.Parse(s)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return "", usagef("--relay must be an http(s) URL such as https://ecb.example.com")
 	}
-	if u.Scheme == "http" {
-		h := u.Hostname()
-		if h != "localhost" && h != "127.0.0.1" && h != "::1" {
-			fmt.Fprintln(errw, "WARNING: the relay URL is plain http. Clipboard items stay encrypted, but device auth and metadata are visible on the network. Use https.")
+	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+		if !insecure {
+			return "", usagef("refusing plain http to %s: the enrollment token and device authentication would be sent unencrypted.\nUse an https:// relay URL, or pass --insecure if you really trust this network", u.Hostname())
 		}
+		fmt.Fprintln(errw, "WARNING: --insecure: the relay URL is plain http. Clipboard items stay encrypted, but the enrollment token, device auth and metadata are visible on the network.")
 	}
 	return s, nil
 }

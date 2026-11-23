@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,22 +59,30 @@ func (c Config) validate() error {
 func (c Config) canSend() bool    { return c.Mode == ModeBoth || c.Mode == ModeSendOnly }
 func (c Config) canReceive() bool { return c.Mode == ModeBoth || c.Mode == ModeReceiveOnly }
 
+// ErrBrokenConfig means config.json exists but cannot be parsed or is invalid.
+// Callers must NOT fall back to the defaults (mode "both") in that case: a
+// corrupt file could otherwise silently turn "paused" into full sync.
+var ErrBrokenConfig = errors.New("config.json is invalid")
+
 // LoadConfig reads dir/config.json; a missing file yields the defaults and
-// missing fields keep their defaults.
+// missing fields keep their defaults. A file that exists but is unreadable or
+// invalid yields an error wrapping ErrBrokenConfig (the returned Config is then
+// meaningless and must not be used).
 func LoadConfig(dir string) (Config, error) {
 	c := DefaultConfig()
-	b, err := os.ReadFile(filepath.Join(dir, ConfigFile))
-	if os.IsNotExist(err) {
+	path := filepath.Join(dir, ConfigFile)
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
 		return c, nil
 	}
 	if err != nil {
-		return c, err
+		return Config{}, fmt.Errorf("%w: %s: %v", ErrBrokenConfig, ConfigFile, err)
 	}
 	if err := json.Unmarshal(b, &c); err != nil {
-		return DefaultConfig(), fmt.Errorf("%s: %w", ConfigFile, err)
+		return Config{}, fmt.Errorf("%w: %s: %v", ErrBrokenConfig, ConfigFile, err)
 	}
 	if err := c.validate(); err != nil {
-		return DefaultConfig(), fmt.Errorf("%s: %w", ConfigFile, err)
+		return Config{}, fmt.Errorf("%w: %s: %v", ErrBrokenConfig, ConfigFile, err)
 	}
 	return c, nil
 }
@@ -106,12 +115,30 @@ func SaveConfig(dir string, c Config) error {
 	return os.Rename(tmp.Name(), filepath.Join(dir, ConfigFile))
 }
 
-// SetMode updates only the mode in dir/config.json.
+// SetMode updates only the mode in dir/config.json. If the existing file is
+// broken it returns an error wrapping ErrBrokenConfig and leaves the file
+// alone; use RepairMode to replace it explicitly.
 func SetMode(dir, mode string) error {
 	c, err := LoadConfig(dir)
 	if err != nil {
-		c = DefaultConfig() // a broken file is replaced by a valid one
+		return fmt.Errorf("%w\nrun `ecb mode %s` again to replace it with a fresh config, or fix %s by hand",
+			err, mode, filepath.Join(dir, ConfigFile))
 	}
 	c.Mode = mode
+	return SaveConfig(dir, c)
+}
+
+// RepairMode replaces a broken config.json with the defaults plus mode. The
+// old file is kept next to it as config.json.bad.
+func RepairMode(dir, mode string) error {
+	c := DefaultConfig()
+	c.Mode = mode
+	if err := c.validate(); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, ConfigFile)
+	if err := os.Rename(path, path+".bad"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	return SaveConfig(dir, c)
 }

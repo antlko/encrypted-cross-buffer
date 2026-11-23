@@ -364,3 +364,85 @@ func TestDeviceIDMatchesHash(t *testing.T) {
 		t.Fatal("device id differs from roster.DeviceID")
 	}
 }
+
+func TestStaleRosterNeverRollsBack(t *testing.T) {
+	dir := t.TempDir()
+	gid := [16]byte{1}
+	daemon, _ := Open(Options{Dir: dir, ForceFile: true})
+	cli, _ := Open(Options{Dir: dir, ForceFile: true})
+	if err := daemon.SaveState(&State{RelayURL: "r", GroupID: gid, RosterBlob: []byte("v1"), RosterVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+	mem, _ := daemon.LoadState() // daemon's in-memory copy: v1
+	// A CLI writes a newer roster (ecb pair / devices rm).
+	if err := cli.UpdateState(func(s *State) error { s.RosterBlob, s.RosterVersion = []byte("v2"), 2; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	// The daemon persists counters with its stale copy via SaveState.
+	mem.SetLastCounter([16]byte{5}, 3)
+	if err := daemon.SaveState(mem); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := cli.LoadState()
+	if string(st.RosterBlob) != "v2" || st.RosterVersion != 2 {
+		t.Fatalf("roster rolled back to %q v%d", st.RosterBlob, st.RosterVersion)
+	}
+	if st.LastCounter([16]byte{5}) != 3 {
+		t.Fatal("counter lost")
+	}
+	// Writers that do not bump the version cannot replace it either.
+	if err := cli.UpdateState(func(s *State) error { s.RosterBlob = []byte("x"); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ = cli.LoadState(); string(st.RosterBlob) != "v2" {
+		t.Fatalf("unversioned write replaced roster: %q", st.RosterBlob)
+	}
+	// A different group (re-init) may replace it.
+	if err := cli.SaveState(&State{RelayURL: "r", GroupID: [16]byte{2}, RosterBlob: []byte("g2"), RosterVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ = cli.LoadState(); string(st.RosterBlob) != "g2" {
+		t.Fatalf("new group not stored: %q", st.RosterBlob)
+	}
+}
+
+func TestLegacyStateWithoutRosterVersionStillLoads(t *testing.T) {
+	dir := t.TempDir()
+	old := `{"relay_url":"r","group_id":"01010101010101010101010101010101","roster_blob":"djE="}`
+	if err := os.WriteFile(filepath.Join(dir, stateFile), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := Open(Options{Dir: dir, ForceFile: true})
+	st, err := s.LoadState()
+	if err != nil || st.RosterVersion != 0 || string(st.RosterBlob) != "v1" {
+		t.Fatalf("%+v %v", st, err)
+	}
+	if err := s.UpdateState(func(s *State) error { s.RosterBlob, s.RosterVersion = []byte("v2"), 2; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ = s.LoadState(); string(st.RosterBlob) != "v2" {
+		t.Fatal("legacy state could not be upgraded")
+	}
+}
+
+func TestFileBackendNeverUsesOSKeyring(t *testing.T) {
+	for _, o := range []Options{{Backend: BackendFile}, {ForceFile: true}} {
+		o.Dir = t.TempDir()
+		s, err := Open(o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.kr != nil {
+			t.Fatalf("%+v: file backend holds a keyring (%T)", o, s.kr)
+		}
+	}
+	t.Setenv(EnvBackend, "file")
+	s, _ := Open(Options{Dir: t.TempDir()})
+	if s.kr != nil {
+		t.Fatal("ECB_KEYSTORE=file holds a keyring")
+	}
+	t.Setenv(EnvBackend, "auto")
+	if s, _ = Open(Options{Dir: t.TempDir()}); s.kr == nil {
+		t.Fatal("auto lost the OS keyring")
+	}
+}

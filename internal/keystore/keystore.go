@@ -8,6 +8,7 @@
 package keystore
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -211,7 +212,9 @@ func Open(o Options) (*Store, error) {
 	}
 	s := &Store{dir: dir, backend: b, fallback: o.AllowFileFallback || b == BackendFile}
 	s.kr = o.Keyring
-	if s.kr == nil && !(o.ForceFile && os.Getenv(EnvBackend) == "") {
+	// The file backend never touches the real OS keychain (not even to delete
+	// a stale entry); only an injected Keyring is used then.
+	if s.kr == nil && b != BackendFile {
 		s.kr = osKeyring{}
 	}
 	if b == BackendFile {
@@ -412,6 +415,10 @@ type State struct {
 	GroupID [16]byte
 	// RosterBlob is the sealed (opaque) roster.
 	RosterBlob []byte
+	// RosterVersion is the version of RosterBlob (0 = unknown, e.g. a state
+	// file written by an older build). UpdateState never replaces a stored
+	// roster with one whose version is not higher (see UpdateState).
+	RosterVersion uint64
 	// LastCounters maps sender device id (hex) to the highest accepted counter.
 	LastCounters map[string]uint64
 	// SendCounter is this device's last used send counter.
@@ -423,6 +430,7 @@ type stateJSON struct {
 	RelayURL     string            `json:"relay_url,omitempty"`
 	GroupID      string            `json:"group_id,omitempty"`
 	RosterBlob   string            `json:"roster_blob,omitempty"`
+	RosterVer    uint64            `json:"roster_version,omitempty"`
 	LastCounters map[string]uint64 `json:"last_counters,omitempty"`
 	SendCounter  uint64            `json:"send_counter,omitempty"`
 }
@@ -458,7 +466,7 @@ func (s *Store) readState() (*State, error) {
 	if err := json.Unmarshal(b, &j); err != nil {
 		return nil, fmt.Errorf("keystore: corrupt state: %w", err)
 	}
-	st := &State{RelayURL: j.RelayURL, LastCounters: j.LastCounters, SendCounter: j.SendCounter}
+	st := &State{RelayURL: j.RelayURL, LastCounters: j.LastCounters, SendCounter: j.SendCounter, RosterVersion: j.RosterVer}
 	if j.GroupID != "" {
 		g, err := hex.DecodeString(j.GroupID)
 		if err != nil || len(g) != 16 {
@@ -486,7 +494,10 @@ func (s *Store) LoadState() (*State, error) {
 // UpdateState runs fn on the current state under an exclusive cross-process
 // file lock (state.lock in the config dir) and writes the result atomically
 // (0600). The state is re-read under the lock; LastCounters and SendCounter
-// are merged by MAX with what is on disk, so they never decrease. If fn
+// are merged by MAX with what is on disk, so they never decrease. The stored
+// roster only moves forward: if fn changes RosterBlob of the same group, it
+// must also set RosterVersion higher than the stored one, otherwise the stored
+// roster is kept (a stale in-memory copy can never roll the roster back). If fn
 // returns an error nothing is written and the error is returned.
 func (s *Store) UpdateState(fn func(*State) error) error {
 	s.mu.Lock()
@@ -505,8 +516,13 @@ func (s *Store) UpdateState(fn func(*State) error) error {
 		disk[k] = v
 	}
 	diskSend := st.SendCounter
+	diskBlob := append([]byte(nil), st.RosterBlob...)
+	diskVer, diskGroup := st.RosterVersion, st.GroupID
 	if err := fn(st); err != nil {
 		return err
+	}
+	if !bytes.Equal(st.RosterBlob, diskBlob) && diskVer > 0 && st.GroupID == diskGroup && st.RosterVersion <= diskVer {
+		st.RosterBlob, st.RosterVersion = diskBlob, diskVer
 	}
 	for k, v := range disk {
 		if st.LastCounters == nil {
@@ -519,7 +535,7 @@ func (s *Store) UpdateState(fn func(*State) error) error {
 	if st.SendCounter < diskSend {
 		st.SendCounter = diskSend
 	}
-	j := stateJSON{RelayURL: st.RelayURL, LastCounters: st.LastCounters, SendCounter: st.SendCounter}
+	j := stateJSON{RelayURL: st.RelayURL, LastCounters: st.LastCounters, SendCounter: st.SendCounter, RosterVer: st.RosterVersion}
 	if st.GroupID != ([16]byte{}) {
 		j.GroupID = fmt.Sprintf("%x", st.GroupID)
 	}
@@ -535,9 +551,12 @@ func (s *Store) UpdateState(fn func(*State) error) error {
 
 // SaveState overwrites the scalar fields (relay, group, roster) with st and
 // merges counters by MAX with the on-disk state, under the cross-process lock.
+// The roster is subject to the forward-only rule of UpdateState. Long-running
+// code that only needs to persist counters must use UpdateState,
+// NextSendCounter or SetLastCounter instead.
 func (s *Store) SaveState(st *State) error {
 	return s.UpdateState(func(cur *State) error {
-		cur.RelayURL, cur.GroupID, cur.RosterBlob = st.RelayURL, st.GroupID, st.RosterBlob
+		cur.RelayURL, cur.GroupID, cur.RosterBlob, cur.RosterVersion = st.RelayURL, st.GroupID, st.RosterBlob, st.RosterVersion
 		for k, v := range st.LastCounters {
 			if cur.LastCounters == nil {
 				cur.LastCounters = map[string]uint64{}

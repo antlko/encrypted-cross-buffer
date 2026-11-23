@@ -55,8 +55,9 @@ func readEnrollToken() (string, error) {
 
 func cmdInit(args []string) error {
 	fs := newFlagSet("init", "Create a new sync group on a relay. The relay's enrollment token is read\nfrom ECB_ENROLL_TOKEN or prompted (never a flag).")
-	relayURL := fs.String("relay", os.Getenv("ECB_RELAY"), "relay base URL, e.g. https://ecb.example.com")
+	relayURL := fs.String("relay", os.Getenv("ECB_RELAY"), "relay base URL, e.g. https://ecb.example.com (http:// only for localhost unless --insecure)")
 	name := fs.String("name", "", "name of this device (default: hostname)")
+	insecure := fs.Bool("insecure", false, "allow a plain http:// relay URL on a non-loopback host (the enrollment token and device auth are then sent unencrypted)")
 	allowFile := fs.Bool("allow-file-keystore", false, "allow storing the device key in a plaintext 0600 file if the OS keychain is unavailable")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -67,7 +68,7 @@ func cmdInit(args []string) error {
 	if *relayURL == "" {
 		return usagef("init needs --relay URL")
 	}
-	base, err := normaliseRelay(*relayURL)
+	base, err := normaliseRelay(*relayURL, *insecure)
 	if err != nil {
 		return err
 	}
@@ -127,7 +128,7 @@ func cmdInit(args []string) error {
 	if err != nil {
 		return err
 	}
-	st.RosterBlob = blob
+	st.RosterBlob, st.RosterVersion = blob, genesis.Version
 	if err := store.SaveState(st); err != nil {
 		return err
 	}
@@ -208,8 +209,9 @@ func cmdPair(args []string) error {
 
 func cmdJoin(args []string) error {
 	fs := newFlagSet("join", "Join an existing group with the code shown by `ecb pair` on a paired device.\nUsage: ecb join [--relay URL] [--name NAME] <code>")
-	relayURL := fs.String("relay", os.Getenv("ECB_RELAY"), "relay base URL (or ECB_RELAY)")
+	relayURL := fs.String("relay", os.Getenv("ECB_RELAY"), "relay base URL (or ECB_RELAY); http:// only for localhost unless --insecure")
 	name := fs.String("name", "", "name of this device (default: hostname)")
+	insecure := fs.Bool("insecure", false, "allow a plain http:// relay URL on a non-loopback host (the enrollment token and device auth are then sent unencrypted)")
 	allowFile := fs.Bool("allow-file-keystore", false, "allow storing the device key in a plaintext 0600 file if the OS keychain is unavailable")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
@@ -225,7 +227,7 @@ func cmdJoin(args []string) error {
 	if *relayURL == "" {
 		return usagef("join needs --relay URL (or ECB_RELAY)")
 	}
-	base, err := normaliseRelay(*relayURL)
+	base, err := normaliseRelay(*relayURL, *insecure)
 	if err != nil {
 		return err
 	}
@@ -270,7 +272,7 @@ func cmdJoin(args []string) error {
 			if err != nil {
 				return err
 			}
-			return store.SaveState(&keystore.State{RelayURL: base, GroupID: j.GroupID, RosterBlob: blob})
+			return store.SaveState(&keystore.State{RelayURL: base, GroupID: j.GroupID, RosterBlob: blob, RosterVersion: j.Roster.Version})
 		},
 	}
 	fmt.Fprintln(out, "Connecting to the relay and checking the code...")
@@ -464,7 +466,14 @@ func cmdSetMode(name, mode string, extra []string) error {
 		return err
 	}
 	if err := daemon.SetMode(store.Dir(), mode); err != nil {
-		return err
+		if !errors.Is(err, daemon.ErrBrokenConfig) {
+			return err
+		}
+		fmt.Fprintf(out, "WARNING: %v\nReplacing it with defaults (mode %s); the old file is kept as %s.bad\n",
+			err, mode, daemon.ConfigFile)
+		if err := daemon.RepairMode(store.Dir(), mode); err != nil {
+			return err
+		}
 	}
 	fmt.Fprintf(out, "Mode set to %s. A running `ecb run` picks it up within ~2 seconds.\n", mode)
 	return nil
@@ -492,7 +501,7 @@ func cmdStatus(args []string) error {
 		fmt.Fprintf(out, "this device: %s (%s)\n", me.Name, shortID(me.DeviceID))
 	}
 	if cerr != nil {
-		fmt.Fprintf(out, "mode:        %s (config unreadable: %v)\n", cfg.Mode, cerr)
+		fmt.Fprintf(out, "mode:        UNKNOWN - %v\n             `ecb run` will refuse to start; fix the file or run `ecb mode <mode>`\n", cerr)
 	} else {
 		fmt.Fprintf(out, "mode:        %s (max text %d B, max image %d B)\n", cfg.Mode, cfg.MaxTextBytes, cfg.MaxImageBytes)
 	}

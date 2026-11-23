@@ -9,6 +9,7 @@ import (
 	"filippo.io/age"
 
 	"github.com/anatolkzh/encrypted-cross-buffer/internal/envelope"
+	"github.com/anatolkzh/encrypted-cross-buffer/internal/keystore"
 )
 
 // ErrNoRecipients means the roster has no device other than this one.
@@ -20,11 +21,32 @@ type ItemRef struct {
 	Size int64  `json:"size"`
 }
 
+// saveState persists ONLY the replay/send counters. The roster is owned by
+// whoever publishes it (daemon refresh, CLI pair/devices rm): this client's
+// in-memory copy may be stale and must never be written back.
 func (c *Client) saveState() error {
 	if c.cfg.Store == nil || c.cfg.State == nil {
 		return nil
 	}
-	return c.cfg.Store.SaveState(c.cfg.State)
+	mem := c.cfg.State
+	return c.cfg.Store.UpdateState(func(cur *keystore.State) error {
+		if cur.GroupID == ([16]byte{}) { // nothing stored yet: bootstrap
+			cur.RelayURL, cur.GroupID = mem.RelayURL, mem.GroupID
+			cur.RosterBlob, cur.RosterVersion = mem.RosterBlob, mem.RosterVersion
+		}
+		if cur.SendCounter < mem.SendCounter {
+			cur.SendCounter = mem.SendCounter
+		}
+		for k, v := range mem.LastCounters {
+			if cur.LastCounters == nil {
+				cur.LastCounters = map[string]uint64{}
+			}
+			if cur.LastCounters[k] < v {
+				cur.LastCounters[k] = v
+			}
+		}
+		return nil
+	})
 }
 
 // SendItem seals body for every OTHER device of the current roster and uploads
@@ -55,8 +77,16 @@ func (c *Client) SendItem(ctx context.Context, ctype uint8, body []byte) (ItemRe
 		return ItemRef{}, ErrNoRecipients
 	}
 	c.stMu.Lock()
-	ctr := c.cfg.State.NextSendCounter()
-	err = c.saveState()
+	var ctr uint64
+	if c.cfg.Store != nil {
+		// Allocated under the cross-process lock so a CLI send and the daemon
+		// can never reuse a counter; the roster is not touched.
+		if ctr, err = c.cfg.Store.NextSendCounter(); err == nil {
+			c.cfg.State.SendCounter = max(c.cfg.State.SendCounter, ctr)
+		}
+	} else {
+		ctr = c.cfg.State.NextSendCounter()
+	}
 	c.stMu.Unlock()
 	if err != nil {
 		return ItemRef{}, fmt.Errorf("client: save state: %w", err)

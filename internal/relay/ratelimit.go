@@ -11,6 +11,10 @@ type bucket struct {
 }
 
 // limiter is a map of token buckets keyed by IP or device.
+// maxLimiterKeys bounds each limiter map; beyond it the least recently used
+// bucket is evicted.
+const maxLimiterKeys = 10000
+
 type limiter struct {
 	mu   sync.Mutex
 	m    map[string]*bucket
@@ -33,6 +37,9 @@ func (l *limiter) refill(key string) *bucket {
 	t := l.now()
 	b := l.m[key]
 	if b == nil {
+		if len(l.m) >= maxLimiterKeys {
+			l.evictOldest()
+		}
 		b = &bucket{tokens: float64(l.rate.Burst), last: t}
 		l.m[key] = b
 		return b
@@ -83,5 +90,20 @@ func (l *limiter) sweep() {
 		if b := l.refill(k); b.tokens >= float64(l.rate.Burst) {
 			delete(l.m, k)
 		}
+	}
+}
+
+// evictOldest drops the least recently used bucket. Caller holds mu.
+func (l *limiter) evictOldest() {
+	var ok string
+	var ot time.Time
+	first := true
+	for k, b := range l.m {
+		if first || b.last.Before(ot) {
+			ok, ot, first = k, b.last, false
+		}
+	}
+	if !first {
+		delete(l.m, ok)
 	}
 }

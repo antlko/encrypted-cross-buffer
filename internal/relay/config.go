@@ -20,6 +20,7 @@ type RateLimits struct {
 	AuthDevice Rate // per device key: /v1/auth/token
 	Pair       Rate // per IP: unauthenticated pairing mailbox endpoints
 	Items      Rate // per device: POST /v1/items
+	PairBurn   Rate // per IP: mailbox-burning requests (DELETE, full-mailbox POST)
 }
 
 // DefaultRateLimits are the production defaults.
@@ -30,6 +31,7 @@ func DefaultRateLimits() RateLimits {
 		AuthDevice: Rate{10, time.Second},
 		Pair:       Rate{30, 200 * time.Millisecond},
 		Items:      Rate{30, 500 * time.Millisecond},
+		PairBurn:   Rate{10, 6 * time.Second}, // ~10 burns per minute
 	}
 }
 
@@ -113,5 +115,8 @@ func (c *Config) defaults() {
 	}
 	if c.Limits == (RateLimits{}) {
 		c.Limits = DefaultRateLimits()
+	}
+	if c.Limits.PairBurn == (Rate{}) {
+		c.Limits.PairBurn = DefaultRateLimits().PairBurn
 	}
 }

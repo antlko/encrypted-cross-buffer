@@ -281,7 +281,9 @@ func TestRelaySubstitutesOwnPake(t *testing.T) {
 
 func TestRejectedDescriptors(t *testing.T) {
 	long := strings.Repeat("x", 65)
-	for name, jname := range map[string]string{"empty": "", "too-long": long, "duplicate-name": "laptop", "control": "a\x00b"} {
+	for name, jname := range map[string]string{"empty": "", "too-long": long, "duplicate-name": "laptop", "control": "a\x00b",
+		"zero-width": "ph\u200bone", "bidi-override": "a\u202eb", "private-use": "ph\ue000one", "nbsp": "ph\u00a0one",
+		"case-duplicate": "LAPTOP", "space-duplicate": "lap top", "mark-duplicate": "l\u0301aptop" + "", "only-spaces": " "} {
 		t.Run(name, func(t *testing.T) {
 			s := newSetup(t)
 			_, ae, _, be := s.run(t, jname, s.code)

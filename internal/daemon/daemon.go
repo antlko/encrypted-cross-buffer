@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/anatolkzh/encrypted-cross-buffer/internal/client"
 	"github.com/anatolkzh/encrypted-cross-buffer/internal/clip"
 	"github.com/anatolkzh/encrypted-cross-buffer/internal/envelope"
+	"github.com/anatolkzh/encrypted-cross-buffer/internal/frame"
 	"github.com/anatolkzh/encrypted-cross-buffer/internal/keystore"
 	"github.com/anatolkzh/encrypted-cross-buffer/internal/roster"
 )
@@ -67,6 +69,7 @@ type Daemon struct {
 	lastApplied         [32]byte
 	hasSent, hasApplied bool
 	appliedAt           map[clip.Kind]time.Time
+	retryDelay          time.Duration // base backoff between fetch attempts (tests)
 	seen                map[string]struct{}
 	seenOrder           []string
 
@@ -120,7 +123,10 @@ func New(o Options) (*Daemon, error) {
 	}
 	d.cfg, err = LoadConfig(o.Store.Dir())
 	if err != nil {
-		d.log.Warn("config unreadable, using defaults", "err", err)
+		// Never fall back to the defaults (mode "both"): a corrupt file must
+		// not silently re-enable sync the user had paused or restricted.
+		return nil, fmt.Errorf("%w\nfix or remove %s, or run `ecb mode <both|send-only|receive-only|paused>` to rewrite it",
+			err, filepath.Join(o.Store.Dir(), ConfigFile))
 	}
 	d.cfgStamp = stampOf(o.Store.Dir())
 	ccfg := client.Config{
@@ -385,7 +391,7 @@ func (d *Daemon) refreshRoster(ctx context.Context, why string) {
 	d.ros = r
 	d.rosMu.Unlock()
 	d.state.RosterBlob = info.Blob // single-goroutine owner (see Run)
-	if err := d.o.Store.UpdateState(func(s *keystore.State) error { s.RosterBlob = info.Blob; return nil }); err != nil {
+	if err := d.o.Store.UpdateState(func(s *keystore.State) error { s.RosterBlob, s.RosterVersion = info.Blob, r.Version; return nil }); err != nil {
 		d.log.Warn("cannot persist roster", "err", err)
 	}
 	d.log.Info("roster updated", "version", r.Version, "devices", len(r.Entries))
@@ -404,11 +410,64 @@ func (d *Daemon) remember(id string) bool {
 	return true
 }
 
+// seenID reports whether id was already handled (without marking it).
+func (d *Daemon) seenID(id string) bool {
+	_, ok := d.seen[id]
+	return ok
+}
+
+// permanentFetchError reports whether retrying cannot help: the item failed
+// verification, decryption or replay checks, or the relay says it is gone.
+func permanentFetchError(err error) bool {
+	var ae *client.APIError
+	if errors.As(err, &ae) {
+		return ae.Status >= 400 && ae.Status < 500 && ae.Status != 401 && ae.Status != 408 && ae.Status != 429
+	}
+	for _, e := range []error{envelope.ErrUnknownCType, envelope.ErrBadInner, envelope.ErrTooBig, envelope.ErrReplay,
+		envelope.ErrExpired, envelope.ErrFuture, envelope.ErrWrongGroup, envelope.ErrBadText, envelope.ErrDecrypt,
+		frame.ErrBadMagic, frame.ErrBadVersion, frame.ErrTooLarge, frame.ErrTrailingData, frame.ErrUnknownSender,
+		frame.ErrBadSignature, frame.ErrBadFlags} {
+		if errors.Is(err, e) {
+			return true
+		}
+	}
+	return false
+}
+
+// fetchRetry fetches id, retrying transient failures (network, 5xx) up to 3
+// attempts in total with a short backoff.
+func (d *Daemon) fetchRetry(ctx context.Context, id string) (*envelope.Item, error) {
+	delay := d.retryDelay
+	if delay <= 0 {
+		delay = 300 * time.Millisecond
+	}
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay << (attempt - 1)):
+			}
+		}
+		fctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		var item *envelope.Item
+		item, err = d.cl.FetchItem(fctx, id)
+		cancel()
+		if err == nil || permanentFetchError(err) || ctx.Err() != nil {
+			return item, err
+		}
+		d.log.Debug("item fetch failed, will retry", "id", id, "attempt", attempt+1, "err_kind", errKind(err))
+	}
+	return nil, err
+}
+
 func (d *Daemon) handleRemote(ctx context.Context, ev client.Event) {
-	if !d.remember(ev.ID) {
+	if d.seenID(ev.ID) {
 		return
 	}
 	if !d.cfg.canReceive() {
+		d.remember(ev.ID)
 		d.log.Debug("item ignored by mode", "mode", d.cfg.Mode)
 		return
 	}
@@ -420,16 +479,21 @@ func (d *Daemon) handleRemote(ctx context.Context, ev client.Event) {
 	if _, known := d.roster().Lookup(from); !known || time.Since(d.lastRefr) > 30*time.Second {
 		d.refreshRoster(ctx, "event")
 	}
-	fctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	item, err := d.cl.FetchItem(fctx, ev.ID)
-	cancel()
+	item, err := d.fetchRetry(ctx, ev.ID)
 	if err != nil {
 		if ctx.Err() == nil {
+			// Only a permanent rejection consumes the id; after exhausted
+			// transient retries a later redelivery of the event may succeed.
+			if permanentFetchError(err) {
+				d.remember(ev.ID)
+			}
 			d.log.Warn("item rejected or unavailable", "id", ev.ID, "err", err)
 			d.onErr(ctx, err)
 		}
 		return
 	}
+	// FetchItem recorded the counter: the item can never be fetched again.
+	d.remember(ev.ID)
 	var k clip.Kind
 	switch item.CType {
 	case envelope.CTypeText:

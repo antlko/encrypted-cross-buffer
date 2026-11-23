@@ -13,3 +13,8 @@ data/
 /dist/
 coverage.out
 # Go fuzz crashers are kept only if reviewed
+/ecb
+/ecb-relay
+cmd/*/ecb
+cmd/*/ecb-relay
+*.exe

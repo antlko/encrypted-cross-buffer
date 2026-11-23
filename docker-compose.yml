@@ -13,7 +13,12 @@ services:
       ECB_DATA_DIR: /data
       ECB_MAX_ITEM_BYTES: ${ECB_MAX_ITEM_BYTES:-33554432}
       ECB_ITEM_TTL: ${ECB_ITEM_TTL:-10m}
-      # true only because traffic arrives via Cloudflare (CF-Connecting-IP).
+      # !!! SECURITY: the relay trusts the CF-Connecting-IP header for its rate
+      # limits (enroll-token brute-force protection) when this is true. That is
+      # ONLY safe because port 8080 is `expose`-only and reachable solely
+      # through the cloudflared tunnel. If you ever add a `ports:` mapping (or
+      # otherwise make the relay reachable directly), set this to false, or any
+      # client can forge the header and bypass the limits.
       ECB_TRUST_PROXY_HEADERS: ${ECB_TRUST_PROXY_HEADERS:-true}
     expose:
       - "8080"

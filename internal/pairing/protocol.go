@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -99,15 +100,41 @@ type descriptor struct {
 	Ed25519   []byte `json:"ed25519"`
 }
 
+// nameKey is the comparison key for device names: case-folded, with spaces and
+// combining marks removed, so "Laptop", "laptop", "L a p t o p" and a name
+// using a decomposed accent collide. It is dependency-free, so it is not full
+// Unicode NFC normalisation (a precomposed letter is not decomposed); the
+// roster's own byte-wise check still applies on top.
+func nameKey(name string) string {
+	var b strings.Builder
+	for _, c := range name {
+		if unicode.IsSpace(c) || unicode.In(c, unicode.Mn, unicode.Me, unicode.Mc) {
+			continue
+		}
+		m := c
+		for f := unicode.SimpleFold(c); f != c; f = unicode.SimpleFold(f) {
+			if f < m {
+				m = f
+			}
+		}
+		b.WriteRune(m)
+	}
+	return b.String()
+}
+
 func validateDescriptor(d descriptor, r *roster.Roster) error {
 	name := d.Name
 	if name == "" || len(name) > roster.MaxNameLen || utf8.RuneCountInString(name) > 64 || !utf8.ValidString(name) {
 		return fmt.Errorf("%w: device name must be 1-%d characters", ErrRejected, roster.MaxNameLen)
 	}
 	for _, c := range name {
-		if unicode.IsControl(c) {
-			return fmt.Errorf("%w: device name has control characters", ErrRejected)
+		if !unicode.IsPrint(c) || unicode.In(c, unicode.Cf, unicode.Cs, unicode.Co) {
+			return fmt.Errorf("%w: device name has non-printable, invisible or private-use characters", ErrRejected)
 		}
+	}
+	key := nameKey(name)
+	if key == "" {
+		return fmt.Errorf("%w: device name must contain visible characters", ErrRejected)
 	}
 	if len(d.Ed25519) != ed25519.PublicKeySize {
 		return fmt.Errorf("%w: bad signing key length", ErrRejected)
@@ -123,7 +150,7 @@ func validateDescriptor(d descriptor, r *roster.Roster) error {
 		if e.DeviceID == id || bytes.Equal(e.Ed25519, d.Ed25519) || e.X25519Pub == d.Recipient {
 			return fmt.Errorf("%w: device is already in the group", ErrRejected)
 		}
-		if e.Name == name {
+		if e.Name == name || nameKey(e.Name) == key {
 			return fmt.Errorf("%w: a device named %q already exists; pick another --name", ErrRejected, name)
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -353,7 +354,10 @@ func TestConfigDefaultsAndValidation(t *testing.T) {
 	if _, err := LoadConfig(dir); err == nil {
 		t.Fatal("invalid mode accepted")
 	}
-	if err := SetMode(dir, ModePaused); err != nil {
+	if err := SetMode(dir, ModePaused); !errors.Is(err, ErrBrokenConfig) {
+		t.Fatalf("SetMode over a broken file: %v", err)
+	}
+	if err := RepairMode(dir, ModePaused); err != nil {
 		t.Fatal(err)
 	}
 	c, _ = LoadConfig(dir)
@@ -362,5 +366,127 @@ func TestConfigDefaultsAndValidation(t *testing.T) {
 	}
 	if err := SetMode(dir, "bogus"); err == nil {
 		t.Fatal("bogus mode saved")
+	}
+}
+
+// flakyRT fails the first n item downloads at the transport level.
+type flakyRT struct {
+	mu   sync.Mutex
+	left int
+	hits int
+	next http.RoundTripper
+}
+
+func (f *flakyRT) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v1/items/") {
+		f.mu.Lock()
+		f.hits++
+		fail := f.left > 0
+		if fail {
+			f.left--
+		}
+		f.mu.Unlock()
+		if fail {
+			return nil, errors.New("simulated network failure")
+		}
+	}
+	return f.next.RoundTrip(r)
+}
+
+func (w *world) startFlaky(d *device, fails int) *flakyRT {
+	w.t.Helper()
+	rt := &flakyRT{left: fails, next: client.NewHTTPClient().Transport}
+	dm, err := New(Options{Store: d.store, Identity: d.id, Clip: d.cb,
+		Logger:   slog.New(slog.NewTextHandler(d.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Debounce: 50 * time.Millisecond, ConfigPoll: 50 * time.Millisecond, EchoWindow: -1,
+		ClientTune: func(c *client.Config) {
+			c.BackoffMin, c.BackoffMax = 20*time.Millisecond, 100*time.Millisecond
+			c.HTTPClient = &http.Client{Transport: rt}
+		}})
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	dm.retryDelay = 20 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	d.d, d.cancel, d.done = dm, cancel, make(chan struct{})
+	go func() { d.err = dm.Run(ctx); close(d.done) }()
+	w.t.Cleanup(func() { cancel(); <-d.done })
+	select {
+	case <-dm.Ready():
+	case <-time.After(10 * time.Second):
+		w.t.Fatal("daemon not ready")
+	}
+	return rt
+}
+
+func TestTransientFetchFailureIsRetried(t *testing.T) {
+	w := newWorld(t, 2)
+	w.start(w.dev[0])
+	rt := w.startFlaky(w.dev[1], 2)
+	_ = w.dev[0].cb.Write(context.Background(), clip.KindText, []byte("survives two failures"))
+	waitFor(t, "delivery after retries", 5*time.Second, func() bool {
+		return string(readClip(w.dev[1], clip.KindText)) == "survives two failures"
+	})
+	if rt.hits != 3 {
+		t.Fatalf("fetch attempts: %d", rt.hits)
+	}
+}
+
+func TestExhaustedTransientRetriesDoNotConsumeEventID(t *testing.T) {
+	w := newWorld(t, 2)
+	w.start(w.dev[0])
+	rt := w.startFlaky(w.dev[1], 3)
+	_ = w.dev[0].cb.Write(context.Background(), clip.KindText, []byte("lost for now"))
+	waitFor(t, "3 attempts", 5*time.Second, func() bool { rt.mu.Lock(); defer rt.mu.Unlock(); return rt.hits >= 3 })
+	time.Sleep(200 * time.Millisecond)
+	if len(w.dev[1].d.seen) != 0 {
+		t.Fatalf("event id marked seen after transient failures: %v", w.dev[1].d.seen)
+	}
+}
+
+func TestBrokenConfigNeverDefaultsOpen(t *testing.T) {
+	w := newWorld(t, 1)
+	d := w.dev[0]
+	if err := SaveConfig(d.store.Dir(), Config{Mode: ModePaused, MaxTextBytes: 1, MaxImageBytes: 1}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(d.store.Dir(), ConfigFile)
+	for _, bad := range []string{`{"mode":"pau`, `{"mode":"nonsense"}`, ``} {
+		if err := os.WriteFile(path, []byte(bad), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := New(Options{Store: d.store, Identity: d.id, Clip: d.cb})
+		if !errors.Is(err, ErrBrokenConfig) || !strings.Contains(err.Error(), "ecb mode") {
+			t.Fatalf("%q: daemon.New err = %v", bad, err)
+		}
+	}
+	os.Remove(path)
+	if _, err := New(Options{Store: d.store, Identity: d.id, Clip: d.cb}); err != nil {
+		t.Fatalf("missing config must default: %v", err)
+	}
+}
+
+func TestSetModeDoesNotSilentlyOverwriteBrokenConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ConfigFile)
+	if err := os.WriteFile(path, []byte(`{broken`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := SetMode(dir, ModeBoth)
+	if !errors.Is(err, ErrBrokenConfig) {
+		t.Fatalf("SetMode err = %v", err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != `{broken` {
+		t.Fatal("broken file was overwritten")
+	}
+	if err := RepairMode(dir, ModePaused); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadConfig(dir)
+	if err != nil || c.Mode != ModePaused {
+		t.Fatalf("%+v %v", c, err)
+	}
+	if b, _ := os.ReadFile(path + ".bad"); string(b) != `{broken` {
+		t.Fatal("old file not kept as .bad")
 	}
 }

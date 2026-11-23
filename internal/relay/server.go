@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"sync"
@@ -33,12 +34,16 @@ type Server struct {
 	items  *spool
 	hub    *hub
 	pairs  *pairMgr
-	lim    struct{ enroll, authIP, authDev, pair, items *limiter }
+	lim    struct{ enroll, authIP, authDev, pair, pairBurn, items *limiter }
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	mux    *http.ServeMux
+
+	// afterVerify is a test hook called after a frame is verified and before
+	// the commit-under-lock membership check. nil in production.
+	afterVerify func()
 }
 
 // New creates the relay, loading persisted groups from cfg.DataDir.
@@ -69,6 +74,7 @@ func New(cfg Config, log *slog.Logger) (*Server, error) {
 	s.lim.authDev = newLimiter(l.AuthDevice, s.now)
 	s.lim.pair = newLimiter(l.Pair, s.now)
 	s.lim.items = newLimiter(l.Items, s.now)
+	s.lim.pairBurn = newLimiter(l.PairBurn, s.now)
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.routes()
 	s.wg.Add(1)
@@ -81,7 +87,7 @@ func (s *Server) Sweep() {
 	s.items.sweep()
 	s.auth.sweep()
 	s.pairs.sweep()
-	for _, l := range []*limiter{s.lim.enroll, s.lim.authIP, s.lim.authDev, s.lim.pair, s.lim.items} {
+	for _, l := range []*limiter{s.lim.enroll, s.lim.authIP, s.lim.authDev, s.lim.pair, s.lim.pairBurn, s.lim.items} {
 		l.sweep()
 	}
 }
@@ -241,22 +247,32 @@ func readJSON(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
 	return true
 }
 
+// clientIP returns the limiter key for the request. Only when
+// TrustProxyHeaders is set is CF-Connecting-IP consulted (cloudflared always
+// sets it; X-Forwarded-For is never trusted). The header is parsed as a literal
+// IP: no DNS lookup is ever performed. Anything unparsable falls back to the
+// peer address.
 func (s *Server) clientIP(r *http.Request) string {
 	if s.cfg.TrustProxyHeaders {
-		cand := strings.TrimSpace(r.Header.Get("CF-Connecting-IP"))
-		if cand == "" {
-			cand, _, _ = strings.Cut(r.Header.Get("X-Forwarded-For"), ",")
-			cand = strings.TrimSpace(cand)
-		}
-		if ip, err := net.ResolveIPAddr("ip", cand); err == nil && cand != "" {
-			return ip.IP.String()
+		if ip, ok := parseIPLiteral(r.Header.Get("CF-Connecting-IP")); ok {
+			return ip
 		}
 	}
-	h, _, err := net.SplitHostPort(r.RemoteAddr)
+	if ap, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
+		return ap.Addr().Unmap().WithZone("").String()
+	}
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return h
+	}
+	return r.RemoteAddr
+}
+
+func parseIPLiteral(v string) (string, bool) {
+	a, err := netip.ParseAddr(strings.TrimSpace(v))
 	if err != nil {
-		return r.RemoteAddr
+		return "", false
 	}
-	return h
+	return a.Unmap().WithZone("").String(), true
 }
 
 // connCtx is cancelled with errRevoked when the device is removed, or with
@@ -264,6 +280,11 @@ func (s *Server) clientIP(r *http.Request) string {
 func (s *Server) connCtx(r *http.Request, sess *session) (context.Context, func()) {
 	ctx, cancel := context.WithCancelCause(r.Context())
 	untrack := s.hub.track(sess.gid, sess.pub, cancel)
+	// A roster publish may have completed (and kicked) between authed() and
+	// track(); re-check membership now that we are registered.
+	if !s.groups.has(sess.gid, sess.pub) {
+		cancel(errRevoked)
+	}
 	stop := context.AfterFunc(s.ctx, func() { cancel(errShutdown) })
 	return ctx, func() { stop(); untrack(); cancel(nil) }
 }
