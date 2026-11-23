@@ -5,11 +5,15 @@ name: release
 #   2. build ecb binaries (linux/macOS/windows) and ecb-relay (linux),
 #   3. build and push a multi-arch container image to ghcr.io,
 #   4. publish a GitHub Release with the archives and SHA256SUMS.
-# "Run workflow" (workflow_dispatch) does a DRY RUN: everything is built, nothing is pushed or published.
+# "Run workflow" (workflow_dispatch) and pushes to main that touch this file, the Dockerfile or go.mod
+# do a DRY RUN: everything is built, nothing is pushed or published (publishing needs a v* tag).
 
 on:
   push:
     tags: ["v*"]
+    # Dry run (build only, nothing published) whenever the release machinery changes.
+    branches: [main]
+    paths: [".github/workflows/release.yml", "Dockerfile", "go.mod"]
   workflow_dispatch:
 
 permissions:
