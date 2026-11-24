@@ -71,6 +71,8 @@ You need: a computer or server that can run Docker (for the relay), and a free C
 
 ### 1. Deploy the server (pick one)
 
+> Already have a tunnel or reverse proxy and use Portainer? Jump to [Option A2](#option-a2-portainer-stack-relay-only-no-git-clone-no-build): it shows the complete compose file.
+
 #### Option A: Docker Compose + Cloudflare Tunnel (recommended, reachable from anywhere)
 
 1. Get the code on the server and go into it.
@@ -120,9 +122,70 @@ You need: a computer or server that can run Docker (for the relay), and a free C
 Use this if you already run a tunnel or reverse proxy (Cloudflare Tunnel, Caddy, nginx, AWS...). The relay is plain HTTP and does not depend on any of them.
 
 1. In Portainer open **Stacks > Add stack**, name it `ecb`, choose **Web editor**.
-2. Paste the whole content of [`docker-compose.portainer.yml`](docker-compose.portainer.yml).
+2. Paste this (the same file lives in the repo as [`docker-compose.portainer.yml`](docker-compose.portainer.yml)):
+
+```yaml
+# Ready-made stack for Portainer (Stacks > Add stack > Web editor: paste this file).
+# No git clone and no build: it pulls the published image from ghcr.io.
+# Relay only: it is a plain HTTP service, independent of any tunnel/proxy/cloud.
+# Put whatever you like in front of it (Cloudflare Tunnel, Caddy, nginx, AWS ALB...).
+#
+# Environment variables (Portainer: "Environment variables" under the editor):
+#   ECB_ENROLL_TOKEN         REQUIRED  secret, >= 16 chars (generate: openssl rand -hex 24)
+#   ECB_PORT                 optional  host port, default 8080
+#   ECB_BIND                 optional  host address to bind, default 0.0.0.0
+#   ECB_TRUST_PROXY_HEADERS  optional  default false; see the note below
+#   ECB_IMAGE_TAG            optional  image version, default 1.0.0 (pin an exact version)
+# Point your existing proxy/tunnel at http://<docker-host>:<ECB_PORT>
+# (or http://relay:8080 if it shares a Docker network with this stack).
+name: ecb
+
+services:
+  relay:
+    image: ghcr.io/antlko/encrypted-cross-buffer:${ECB_IMAGE_TAG:-1.0.0}
+    restart: unless-stopped
+    environment:
+      ECB_ENROLL_TOKEN: ${ECB_ENROLL_TOKEN:?set ECB_ENROLL_TOKEN in the stack environment variables}
+      ECB_ADDR: ":8080"
+      ECB_DATA_DIR: /data
+      ECB_MAX_ITEM_BYTES: ${ECB_MAX_ITEM_BYTES:-33554432}
+      ECB_ITEM_TTL: ${ECB_ITEM_TTL:-10m}
+      # Keep false unless the relay is reachable ONLY through Cloudflare (then true makes
+      # rate limits use the real client IP from CF-Connecting-IP). With a published port
+      # anyone could forge that header, so false is the safe default.
+      ECB_TRUST_PROXY_HEADERS: ${ECB_TRUST_PROXY_HEADERS:-false}
+    ports:
+      - "${ECB_BIND:-0.0.0.0}:${ECB_PORT:-8080}:8080"
+    volumes:
+      - ecb-data:/data
+    user: nonroot
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "/ecb-relay", "-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ecb-data:
+```
+
 3. Under **Environment variables** add `ECB_ENROLL_TOKEN` = the output of `openssl rand -hex 24` (keep it private). Optional: `ECB_PORT` (default `8080`).
-4. Click **Deploy the stack**. `relay` should become `healthy`.
+4. Click **Deploy the stack**. In the stack you should see one container, `ecb-relay-1`, with status `running` and then `healthy` after a few seconds.
 5. Point your tunnel/proxy at `http://<docker-host>:8080` (for Cloudflare: add a public hostname with that Service URL). Do not expose the port directly to the internet; TLS must come from your proxy.
 6. Check: `curl https://ecb.example.com/healthz` prints `ok`.
 
