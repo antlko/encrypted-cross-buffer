@@ -209,17 +209,25 @@ You should see `ok`. Use `http://127.0.0.1:8080` as the relay URL below. No `TUN
 
 **Pick one.** The easiest way is to download a ready-made binary from the [Releases page](https://github.com/antlko/encrypted-cross-buffer/releases). To build it yourself you need **Go 1.26 or newer** (see https://go.dev/dl/); no C compiler is needed.
 
-- **Download a release (macOS, Linux, Windows):** open the latest release, download the archive for your system (`ecb_<version>_<os>_<arch>`: `darwin_arm64` for Apple Silicon Macs, `darwin_amd64` for Intel Macs, `linux_amd64`, `linux_arm64`, `windows_amd64`), and check it against `SHA256SUMS` from the same page.
+- **Download a release, macOS and Linux (copy-paste, picks the right file for your machine):**
 
   ```bash
-  # macOS / Linux example (replace the file name with the one you downloaded)
-  shasum -a 256 -c SHA256SUMS --ignore-missing
-  tar -xzf ecb_v1.0.0_darwin_arm64.tar.gz
-  sudo install -m 0755 ecb_v1.0.0_darwin_arm64/ecb /usr/local/bin/ecb
+  VERSION=v1.0.0
+  OS=$(uname -s | tr '[:upper:]' '[:lower:]')      # linux or darwin
+  case "$(uname -m)" in x86_64|amd64) ARCH=amd64 ;; aarch64|arm64) ARCH=arm64 ;; esac
+  NAME="ecb_${VERSION}_${OS}_${ARCH}"
+  echo "Downloading $NAME"                         # must say linux_* on Linux, darwin_* on a Mac
+  BASE="https://github.com/antlko/encrypted-cross-buffer/releases/download/${VERSION}"
+  curl -fsSLO "$BASE/$NAME.tar.gz" -O "$BASE/SHA256SUMS"
+  grep " $NAME.tar.gz\$" SHA256SUMS | (sha256sum -c - 2>/dev/null || shasum -a 256 -c -)
+  tar -xzf "$NAME.tar.gz"
+  sudo install -m 0755 "$NAME/ecb" /usr/local/bin/ecb
   ecb version
   ```
 
-  You should see `ecb v1.0.0`. On Windows, unzip the archive and put `ecb.exe` in a folder that is on your `PATH`. *macOS may warn that the binary is from an unidentified developer because it is not notarized; run `xattr -d com.apple.quarantine /usr/local/bin/ecb` once, or build from source.*
+  You should see `NAME: OK` from the checksum step and `ecb v1.0.0` at the end. If you see `Exec format error`, you installed the wrong file (for example the `darwin` build, which is for Macs, on Linux): check the `Downloading ...` line, delete the folder and run the block again. *macOS may warn that the binary is from an unidentified developer because it is not notarized; run `xattr -d com.apple.quarantine /usr/local/bin/ecb` once, or build from source.*
+
+- **Download a release, Windows:** open the [Releases page](https://github.com/antlko/encrypted-cross-buffer/releases), download `ecb_<version>_windows_amd64.zip`, unzip it and put `ecb.exe` in a folder that is on your `PATH`. Other files there: `linux_amd64`, `linux_arm64`, `darwin_arm64` (Apple Silicon), `darwin_amd64` (Intel Mac).
 
 - **Build from source (macOS and Linux):**
 
@@ -431,6 +439,8 @@ Good to know:
 
 | Symptom | Likely cause and fix |
 | --- | --- |
+| `ecb version`: `cannot execute binary file: Exec format error` | You installed a build for another OS or CPU (for example `darwin_amd64`, which is a Mac build, on Linux). Check `uname -sm`, then use the copy-paste download block in [Install](#2-install-ecb-on-each-computer), which picks the right file. |
+| `sudo` prints `/etc/sudoers.d/...: wildcards are not allowed in command arguments` | That is a problem in your own sudoers file, not in `ecb`. The command still runs; fix the file with `sudo visudo -f /etc/sudoers.d/<name>` when convenient. |
 | `docker compose up` says `set ECB_ENROLL_TOKEN in .env` | `.env` is missing or the token is empty. Copy `.env.example` to `.env` and set it. |
 | `cloudflared` keeps restarting | Wrong or empty `TUNNEL_TOKEN`. Copy only the token from the tunnel's Docker command. |
 | `https://.../healthz` gives a Cloudflare error (502/1033) | The route points to the wrong service. Service URL must be `http://relay:8080`, and `relay` must be `healthy` (`docker compose ps`). |
