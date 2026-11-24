@@ -222,5 +222,5 @@ multi-arch image to `ghcr.io/antlko/encrypted-cross-buffer` (tags `1.0.1`, `1.0`
 GitHub Release with `SHA256SUMS`. Running the workflow by hand, or pushing changes to `release.yml`, the `Dockerfile`
 or `go.mod` to `main`, does a dry run that builds everything and publishes nothing.
 
-To run the published image instead of building it, replace `build: .` in the `relay` service of `docker-compose.yml`
+For Portainer (or any host without the source) use `docker-compose.portainer.yml`: it already runs the published image, needs only `ECB_ENROLL_TOKEN` and `TUNNEL_TOKEN` as stack variables, and has no `profiles`. To run the published image from the regular file instead, replace `build: .` in the `relay` service of `docker-compose.yml`
 with `image: ghcr.io/antlko/encrypted-cross-buffer:1.0.0` (pin an exact version).

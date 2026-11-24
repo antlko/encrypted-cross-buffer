@@ -1,0 +1,72 @@
+# Ready-made stack for Portainer (Stacks > Add stack > Web editor: paste this file).
+# No git clone and no build: it pulls the published image from ghcr.io.
+#
+# Environment variables (Portainer: "Environment variables" section under the editor):
+#   ECB_ENROLL_TOKEN  REQUIRED  secret, >= 16 chars (generate: openssl rand -hex 24)
+#   TUNNEL_TOKEN      REQUIRED  Cloudflare tunnel token (starts with eyJ)
+#   ECB_IMAGE_TAG     optional  image version, default 1.0.0 (pin an exact version)
+# Cloudflare tunnel route: Service URL = http://relay:8080
+name: ecb
+
+services:
+  relay:
+    image: ghcr.io/antlko/encrypted-cross-buffer:${ECB_IMAGE_TAG:-1.0.0}
+    restart: unless-stopped
+    environment:
+      ECB_ENROLL_TOKEN: ${ECB_ENROLL_TOKEN:?set ECB_ENROLL_TOKEN in the stack environment variables}
+      ECB_ADDR: ":8080"
+      ECB_DATA_DIR: /data
+      ECB_MAX_ITEM_BYTES: ${ECB_MAX_ITEM_BYTES:-33554432}
+      ECB_ITEM_TTL: ${ECB_ITEM_TTL:-10m}
+      # SECURITY: true makes the relay trust CF-Connecting-IP for rate limits. Safe ONLY
+      # because port 8080 is `expose`-only (reachable just through the tunnel). If you
+      # ever add `ports:` for the relay, set this to false.
+      ECB_TRUST_PROXY_HEADERS: ${ECB_TRUST_PROXY_HEADERS:-true}
+    expose:
+      - "8080"
+    volumes:
+      - ecb-data:/data
+    user: nonroot
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "/ecb-relay", "-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.11.1
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in the stack environment variables}
+    depends_on:
+      relay:
+        condition: service_healthy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ecb-data:

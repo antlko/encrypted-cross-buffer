@@ -115,6 +115,18 @@ You need: a computer or server that can run Docker (for the relay), and a free C
 
    You should see `ok`. If you do not, see [Troubleshooting](#troubleshooting).
 
+#### Option A2: Portainer stack (no git clone, no build)
+
+1. In Portainer open **Stacks > Add stack**, name it `ecb`, choose **Web editor**.
+2. Paste the whole content of [`docker-compose.portainer.yml`](docker-compose.portainer.yml).
+3. Under **Environment variables** add two variables:
+   - `ECB_ENROLL_TOKEN` = the output of `openssl rand -hex 24` (keep it private).
+   - `TUNNEL_TOKEN` = the Cloudflare tunnel token (steps 3.1-3.6 of Option A below; Service URL `http://relay:8080`).
+4. Click **Deploy the stack**. Both containers should become `running`, and `relay` `healthy` after a few seconds.
+5. Check: `curl https://ecb.example.com/healthz` prints `ok`.
+
+To update, change `ECB_IMAGE_TAG` (optional variable, default `1.0.0`) and use **Update the stack > Re-pull image**.
+
 #### Option B: local test without a tunnel (same computer or home network)
 
 This publishes the relay on `127.0.0.1:8080` only. It is good for trying `ecb` out on one machine. *It is plain HTTP and not reachable from other computers.*
