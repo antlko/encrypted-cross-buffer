@@ -115,17 +115,18 @@ You need: a computer or server that can run Docker (for the relay), and a free C
 
    You should see `ok`. If you do not, see [Troubleshooting](#troubleshooting).
 
-#### Option A2: Portainer stack (no git clone, no build)
+#### Option A2: Portainer stack (relay only, no git clone, no build)
+
+Use this if you already run a tunnel or reverse proxy (Cloudflare Tunnel, Caddy, nginx, AWS...). The relay is plain HTTP and does not depend on any of them.
 
 1. In Portainer open **Stacks > Add stack**, name it `ecb`, choose **Web editor**.
 2. Paste the whole content of [`docker-compose.portainer.yml`](docker-compose.portainer.yml).
-3. Under **Environment variables** add two variables:
-   - `ECB_ENROLL_TOKEN` = the output of `openssl rand -hex 24` (keep it private).
-   - `TUNNEL_TOKEN` = the Cloudflare tunnel token (steps 3.1-3.6 of Option A below; Service URL `http://relay:8080`).
-4. Click **Deploy the stack**. Both containers should become `running`, and `relay` `healthy` after a few seconds.
-5. Check: `curl https://ecb.example.com/healthz` prints `ok`.
+3. Under **Environment variables** add `ECB_ENROLL_TOKEN` = the output of `openssl rand -hex 24` (keep it private). Optional: `ECB_PORT` (default `8080`).
+4. Click **Deploy the stack**. `relay` should become `healthy`.
+5. Point your tunnel/proxy at `http://<docker-host>:8080` (for Cloudflare: add a public hostname with that Service URL). Do not expose the port directly to the internet; TLS must come from your proxy.
+6. Check: `curl https://ecb.example.com/healthz` prints `ok`.
 
-To update, change `ECB_IMAGE_TAG` (optional variable, default `1.0.0`) and use **Update the stack > Re-pull image**.
+Set `ECB_TRUST_PROXY_HEADERS=true` only if Cloudflare is the sole way in. To update, change `ECB_IMAGE_TAG` and use **Update the stack > Re-pull image**.
 
 #### Option B: local test without a tunnel (same computer or home network)
 

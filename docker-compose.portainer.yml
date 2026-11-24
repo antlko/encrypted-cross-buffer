@@ -1,11 +1,16 @@
 # Ready-made stack for Portainer (Stacks > Add stack > Web editor: paste this file).
 # No git clone and no build: it pulls the published image from ghcr.io.
+# Relay only: it is a plain HTTP service, independent of any tunnel/proxy/cloud.
+# Put whatever you like in front of it (Cloudflare Tunnel, Caddy, nginx, AWS ALB...).
 #
-# Environment variables (Portainer: "Environment variables" section under the editor):
-#   ECB_ENROLL_TOKEN  REQUIRED  secret, >= 16 chars (generate: openssl rand -hex 24)
-#   TUNNEL_TOKEN      REQUIRED  Cloudflare tunnel token (starts with eyJ)
-#   ECB_IMAGE_TAG     optional  image version, default 1.0.0 (pin an exact version)
-# Cloudflare tunnel route: Service URL = http://relay:8080
+# Environment variables (Portainer: "Environment variables" under the editor):
+#   ECB_ENROLL_TOKEN         REQUIRED  secret, >= 16 chars (generate: openssl rand -hex 24)
+#   ECB_PORT                 optional  host port, default 8080
+#   ECB_BIND                 optional  host address to bind, default 0.0.0.0
+#   ECB_TRUST_PROXY_HEADERS  optional  default false; see the note below
+#   ECB_IMAGE_TAG            optional  image version, default 1.0.0 (pin an exact version)
+# Point your existing proxy/tunnel at http://<docker-host>:<ECB_PORT>
+# (or http://relay:8080 if it shares a Docker network with this stack).
 name: ecb
 
 services:
@@ -18,12 +23,12 @@ services:
       ECB_DATA_DIR: /data
       ECB_MAX_ITEM_BYTES: ${ECB_MAX_ITEM_BYTES:-33554432}
       ECB_ITEM_TTL: ${ECB_ITEM_TTL:-10m}
-      # SECURITY: true makes the relay trust CF-Connecting-IP for rate limits. Safe ONLY
-      # because port 8080 is `expose`-only (reachable just through the tunnel). If you
-      # ever add `ports:` for the relay, set this to false.
-      ECB_TRUST_PROXY_HEADERS: ${ECB_TRUST_PROXY_HEADERS:-true}
-    expose:
-      - "8080"
+      # Keep false unless the relay is reachable ONLY through Cloudflare (then true makes
+      # rate limits use the real client IP from CF-Connecting-IP). With a published port
+      # anyone could forge that header, so false is the safe default.
+      ECB_TRUST_PROXY_HEADERS: ${ECB_TRUST_PROXY_HEADERS:-false}
+    ports:
+      - "${ECB_BIND:-0.0.0.0}:${ECB_PORT:-8080}:8080"
     volumes:
       - ecb-data:/data
     user: nonroot
@@ -42,26 +47,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  cloudflared:
-    image: cloudflare/cloudflared:2026.11.1
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run
-    environment:
-      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in the stack environment variables}
-    depends_on:
-      relay:
-        condition: service_healthy
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
     logging:
       driver: json-file
       options:
